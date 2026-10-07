@@ -6,20 +6,25 @@ import dotenv from "dotenv";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 
-dns.setServers(["1.1.1.1", "8.8.8.8"]);
-
 dotenv.config();
 
 /* =====================================================
-   EXPRESS SERVER
+   DNS
+===================================================== */
+
+dns.setServers(["1.1.1.1", "8.8.8.8"]);
+
+/* =====================================================
+   EXPRESS
 ===================================================== */
 
 const app = express();
 
-const PORT = process.env.PORT || 5000;
+/* =====================================================
+   ENVIRONMENT VARIABLES
+===================================================== */
 
 const MONGODB_URI = process.env.MONGODB_URI;
-
 const JWT_SECRET = process.env.JWT_SECRET;
 
 /* =====================================================
@@ -27,13 +32,11 @@ const JWT_SECRET = process.env.JWT_SECRET;
 ===================================================== */
 
 if (!MONGODB_URI) {
-  console.error("MONGODB_URI is missing.");
-  process.exit(1);
+  console.error("ERROR: MONGODB_URI is missing.");
 }
 
 if (!JWT_SECRET) {
-  console.error("JWT_SECRET is missing.");
-  process.exit(1);
+  console.error("ERROR: JWT_SECRET is missing.");
 }
 
 /* =====================================================
@@ -50,7 +53,7 @@ app.use(
     origin: function (origin, callback) {
       /*
         Allow requests without an origin.
-        Useful for Postman/server-to-server requests.
+        Useful for Postman and server-to-server requests.
       */
 
       if (!origin) {
@@ -61,7 +64,9 @@ app.use(
         return callback(null, true);
       }
 
-      return callback(new Error("Not allowed by CORS"));
+      return callback(
+        new Error("Not allowed by CORS")
+      );
     },
 
     methods: [
@@ -80,23 +85,53 @@ app.use(
 app.use(express.json());
 
 /* =====================================================
-   MONGODB
+   MONGODB CONNECTION
 ===================================================== */
 
 let mongoConnection = null;
 
 async function connectDatabase() {
+  if (!MONGODB_URI) {
+    throw new Error(
+      "MONGODB_URI environment variable is missing."
+    );
+  }
+
+  /*
+    Reuse an existing connection.
+  */
+
   if (mongoose.connection.readyState === 1) {
     return mongoose.connection;
   }
+
+  /*
+    Reuse an existing connection promise.
+  */
 
   if (mongoConnection) {
     return mongoConnection;
   }
 
-  mongoConnection = await mongoose.connect(MONGODB_URI);
+  mongoConnection = mongoose
+    .connect(MONGODB_URI)
+    .then((connection) => {
+      console.log(
+        "MongoDB connected successfully."
+      );
 
-  console.log("MongoDB connected successfully.");
+      return connection;
+    })
+    .catch((error) => {
+      mongoConnection = null;
+
+      console.error(
+        "MongoDB connection error:",
+        error
+      );
+
+      throw error;
+    });
 
   return mongoConnection;
 }
@@ -149,71 +184,76 @@ const userSchema = new mongoose.Schema(
 
 const User =
   mongoose.models.User ||
-  mongoose.model("User", userSchema);
+  mongoose.model(
+    "User",
+    userSchema
+  );
 
 /* =====================================================
    TRANSACTION MODEL
 ===================================================== */
 
-const transactionSchema = new mongoose.Schema(
-  {
-    userId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
-      required: true,
+const transactionSchema =
+  new mongoose.Schema(
+    {
+      userId: {
+        type:
+          mongoose.Schema.Types.ObjectId,
+        ref: "User",
+        required: true,
+      },
+
+      transactionId: {
+        type: String,
+        required: true,
+        unique: true,
+      },
+
+      type: {
+        type: String,
+        enum: [
+          "deposit",
+          "withdrawal",
+        ],
+        required: true,
+      },
+
+      amount: {
+        type: Number,
+        required: true,
+      },
+
+      paymentMethod: {
+        type: String,
+        default: "Bank Transfer",
+      },
+
+      accountNumber: {
+        type: String,
+        default: "",
+      },
+
+      accountName: {
+        type: String,
+        default: "",
+      },
+
+      status: {
+        type: String,
+        enum: [
+          "pending",
+          "processing",
+          "completed",
+          "failed",
+        ],
+        default: "pending",
+      },
     },
 
-    transactionId: {
-      type: String,
-      required: true,
-      unique: true,
-    },
-
-    type: {
-      type: String,
-      enum: [
-        "deposit",
-        "withdrawal",
-      ],
-      required: true,
-    },
-
-    amount: {
-      type: Number,
-      required: true,
-    },
-
-    paymentMethod: {
-      type: String,
-      default: "Bank Transfer",
-    },
-
-    accountNumber: {
-      type: String,
-      default: "",
-    },
-
-    accountName: {
-      type: String,
-      default: "",
-    },
-
-    status: {
-      type: String,
-      enum: [
-        "pending",
-        "processing",
-        "completed",
-        "failed",
-      ],
-      default: "pending",
-    },
-  },
-
-  {
-    timestamps: true,
-  }
-);
+    {
+      timestamps: true,
+    }
+  );
 
 const Transaction =
   mongoose.models.Transaction ||
@@ -226,42 +266,44 @@ const Transaction =
    WITHDRAWAL ACCOUNT MODEL
 ===================================================== */
 
-const withdrawalAccountSchema = new mongoose.Schema(
-  {
-    userId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
-      required: true,
+const withdrawalAccountSchema =
+  new mongoose.Schema(
+    {
+      userId: {
+        type:
+          mongoose.Schema.Types.ObjectId,
+        ref: "User",
+        required: true,
+      },
+
+      provider: {
+        type: String,
+        required: true,
+        trim: true,
+      },
+
+      accountName: {
+        type: String,
+        required: true,
+        trim: true,
+      },
+
+      accountNumber: {
+        type: String,
+        required: true,
+        trim: true,
+      },
+
+      isDefault: {
+        type: Boolean,
+        default: false,
+      },
     },
 
-    provider: {
-      type: String,
-      required: true,
-      trim: true,
-    },
-
-    accountName: {
-      type: String,
-      required: true,
-      trim: true,
-    },
-
-    accountNumber: {
-      type: String,
-      required: true,
-      trim: true,
-    },
-
-    isDefault: {
-      type: Boolean,
-      default: false,
-    },
-  },
-
-  {
-    timestamps: true,
-  }
-);
+    {
+      timestamps: true,
+    }
+  );
 
 const WithdrawalAccount =
   mongoose.models.WithdrawalAccount ||
@@ -287,24 +329,40 @@ function generateId() {
    AUTHENTICATION
 ===================================================== */
 
-async function authenticate(req, res, next) {
+async function authenticate(
+  req,
+  res,
+  next
+) {
   try {
+    if (!JWT_SECRET) {
+      return res.status(500).json({
+        success: false,
+        message:
+          "JWT_SECRET is not configured.",
+      });
+    }
+
     const authorization =
       req.headers.authorization;
 
     if (!authorization) {
       return res.status(401).json({
         success: false,
-        message: "Authentication required.",
+        message:
+          "Authentication required.",
       });
     }
 
     if (
-      !authorization.startsWith("Bearer ")
+      !authorization.startsWith(
+        "Bearer "
+      )
     ) {
       return res.status(401).json({
         success: false,
-        message: "Invalid authorization format.",
+        message:
+          "Invalid authorization format.",
       });
     }
 
@@ -327,7 +385,8 @@ async function authenticate(req, res, next) {
     if (!user) {
       return res.status(401).json({
         success: false,
-        message: "User not found.",
+        message:
+          "User not found.",
       });
     }
 
@@ -335,9 +394,15 @@ async function authenticate(req, res, next) {
 
     next();
   } catch (error) {
+    console.error(
+      "AUTHENTICATION ERROR:",
+      error
+    );
+
     return res.status(401).json({
       success: false,
-      message: "Invalid or expired token.",
+      message:
+        "Invalid or expired token.",
     });
   }
 }
@@ -346,27 +411,32 @@ async function authenticate(req, res, next) {
    API HOME
 ===================================================== */
 
-app.get("/", async (req, res) => {
-  try {
-    await connectDatabase();
+app.get(
+  "/",
+  async (req, res) => {
+    try {
+      await connectDatabase();
 
-    res.json({
-      success: true,
-      message: "Elonixx API is running 🚀",
-      status: "online",
-    });
-  } catch (error) {
-    console.error(
-      "API HOME ERROR:",
-      error
-    );
+      return res.json({
+        success: true,
+        message:
+          "Elonixx API is running 🚀",
+        status: "online",
+      });
+    } catch (error) {
+      console.error(
+        "API HOME ERROR:",
+        error
+      );
 
-    res.status(500).json({
-      success: false,
-      message: "Database connection failed.",
-    });
+      return res.status(500).json({
+        success: false,
+        message:
+          "Database connection failed.",
+      });
+    }
   }
-});
+);
 
 /* =====================================================
    API TEST
@@ -378,7 +448,7 @@ app.get(
     try {
       await connectDatabase();
 
-      res.json({
+      return res.json({
         success: true,
         message:
           "Elonixx backend is connected successfully!",
@@ -389,7 +459,7 @@ app.get(
         error
       );
 
-      res.status(500).json({
+      return res.status(500).json({
         success: false,
         message:
           "Backend cannot connect to MongoDB.",
@@ -408,7 +478,7 @@ app.get(
     try {
       await connectDatabase();
 
-      res.json({
+      return res.json({
         success: true,
         app: "ElonixWallet",
         message:
@@ -417,7 +487,12 @@ app.get(
         secure: true,
       });
     } catch (error) {
-      res.status(500).json({
+      console.error(
+        "HOME ERROR:",
+        error
+      );
+
+      return res.status(500).json({
         success: false,
         message:
           "Unable to connect to database.",
@@ -435,6 +510,14 @@ app.post(
   async (req, res) => {
     try {
       await connectDatabase();
+
+      if (!JWT_SECRET) {
+        return res.status(500).json({
+          success: false,
+          message:
+            "JWT_SECRET is not configured.",
+        });
+      }
 
       const {
         name,
@@ -498,19 +581,24 @@ app.post(
 
       const hashedPassword =
         await bcrypt.hash(
-          password,
+          String(password),
           12
         );
 
       const user =
         await User.create({
           name: cleanName,
+
           email:
             normalizedEmail,
+
           password:
             hashedPassword,
+
           balance: 0,
+
           deposited: 0,
+
           withdrawn: 0,
         });
 
@@ -520,7 +608,9 @@ app.post(
             userId:
               user._id.toString(),
           },
+
           JWT_SECRET,
+
           {
             expiresIn: "7d",
           }
@@ -535,14 +625,19 @@ app.post(
         user: {
           id:
             user._id.toString(),
+
           name:
             user.name,
+
           email:
             user.email,
+
           balance:
             user.balance,
+
           deposited:
             user.deposited,
+
           withdrawn:
             user.withdrawn,
         },
@@ -584,6 +679,14 @@ app.post(
     try {
       await connectDatabase();
 
+      if (!JWT_SECRET) {
+        return res.status(500).json({
+          success: false,
+          message:
+            "JWT_SECRET is not configured.",
+        });
+      }
+
       const {
         email,
         password,
@@ -621,7 +724,7 @@ app.post(
 
       const passwordMatches =
         await bcrypt.compare(
-          password,
+          String(password),
           user.password
         );
 
@@ -639,7 +742,9 @@ app.post(
             userId:
               user._id.toString(),
           },
+
           JWT_SECRET,
+
           {
             expiresIn: "7d",
           }
@@ -654,14 +759,19 @@ app.post(
         user: {
           id:
             user._id.toString(),
+
           name:
             user.name,
+
           email:
             user.email,
+
           balance:
             user.balance,
+
           deposited:
             user.deposited,
+
           withdrawn:
             user.withdrawn,
         },
@@ -719,14 +829,19 @@ app.get(
         user: {
           id:
             req.user._id.toString(),
+
           name:
             req.user.name,
+
           email:
             req.user.email,
+
           balance:
             req.user.balance,
+
           deposited:
             req.user.deposited,
+
           withdrawn:
             req.user.withdrawn,
         },
@@ -856,6 +971,27 @@ app.post(
         });
       }
 
+      const cleanProvider =
+        String(provider).trim();
+
+      const cleanAccountName =
+        String(accountName).trim();
+
+      const cleanAccountNumber =
+        String(accountNumber).trim();
+
+      if (
+        !cleanProvider ||
+        !cleanAccountName ||
+        !cleanAccountNumber
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "All withdrawal account fields are required.",
+        });
+      }
+
       const accountCount =
         await WithdrawalAccount.countDocuments({
           userId:
@@ -868,13 +1004,13 @@ app.post(
             req.user._id,
 
           provider:
-            String(provider).trim(),
+            cleanProvider,
 
           accountName:
-            String(accountName).trim(),
+            cleanAccountName,
 
           accountNumber:
-            String(accountNumber).trim(),
+            cleanAccountNumber,
 
           isDefault:
             accountCount === 0,
@@ -1020,7 +1156,7 @@ app.post(
 
 app.use(
   (req, res) => {
-    res.status(404).json({
+    return res.status(404).json({
       success: false,
       message:
         "Endpoint not found.",
@@ -1031,14 +1167,7 @@ app.use(
 );
 
 /* =====================================================
-   START SERVER
+   VERCEL EXPORT
 ===================================================== */
 
-app.listen(
-  PORT,
-  () => {
-    console.log(
-      `Elonixx API running on port ${PORT}`
-    );
-  }
-);
+export default app;
