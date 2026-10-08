@@ -10,10 +10,6 @@ dotenv.config();
 
 dns.setServers(["1.1.1.1", "8.8.8.8"]);
 
-/* =====================================================
-   EXPRESS
-===================================================== */
-
 const app = express();
 
 /* =====================================================
@@ -27,13 +23,19 @@ const JWT_SECRET = process.env.JWT_SECRET;
    ENVIRONMENT CHECK
 ===================================================== */
 
-if (!MONGODB_URI) {
-  console.error("ERROR: MONGODB_URI is missing.");
-}
+console.log("=================================");
+console.log("ELONIXX BACKEND STARTING");
+console.log("=================================");
 
-if (!JWT_SECRET) {
-  console.error("ERROR: JWT_SECRET is missing.");
-}
+console.log(
+  "MONGODB_URI:",
+  MONGODB_URI ? "FOUND" : "MISSING"
+);
+
+console.log(
+  "JWT_SECRET:",
+  JWT_SECRET ? "FOUND" : "MISSING"
+);
 
 /* =====================================================
    CORS
@@ -47,7 +49,6 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests without an Origin header
       if (!origin) {
         return callback(null, true);
       }
@@ -55,6 +56,11 @@ app.use(
       if (allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
+
+      console.log(
+        "Blocked CORS origin:",
+        origin
+      );
 
       return callback(
         new Error("Not allowed by CORS")
@@ -86,7 +92,7 @@ app.use(
 app.use(express.json());
 
 /* =====================================================
-   MONGODB CONNECTION
+   DATABASE CONNECTION
 ===================================================== */
 
 let mongoConnection = null;
@@ -98,12 +104,12 @@ async function connectDatabase() {
     );
   }
 
-  // Already connected
-  if (mongoose.connection.readyState === 1) {
+  if (
+    mongoose.connection.readyState === 1
+  ) {
     return mongoose.connection;
   }
 
-  // Connection already being established
   if (mongoConnection) {
     return mongoConnection;
   }
@@ -111,6 +117,7 @@ async function connectDatabase() {
   mongoConnection = mongoose
     .connect(MONGODB_URI, {
       serverSelectionTimeoutMS: 10000,
+      connectTimeoutMS: 10000,
     })
     .then((connection) => {
       console.log(
@@ -123,7 +130,7 @@ async function connectDatabase() {
       mongoConnection = null;
 
       console.error(
-        "MongoDB connection error:",
+        "MongoDB connection failed:",
         error
       );
 
@@ -137,113 +144,120 @@ async function connectDatabase() {
    USER MODEL
 ===================================================== */
 
-const userSchema = new mongoose.Schema(
-  {
-    name: {
-      type: String,
-      required: true,
-      trim: true,
+const userSchema =
+  new mongoose.Schema(
+    {
+      name: {
+        type: String,
+        required: true,
+        trim: true,
+      },
+
+      email: {
+        type: String,
+        required: true,
+        unique: true,
+        lowercase: true,
+        trim: true,
+      },
+
+      password: {
+        type: String,
+        required: true,
+      },
+
+      balance: {
+        type: Number,
+        default: 0,
+      },
+
+      deposited: {
+        type: Number,
+        default: 0,
+      },
+
+      withdrawn: {
+        type: Number,
+        default: 0,
+      },
     },
 
-    email: {
-      type: String,
-      required: true,
-      unique: true,
-      lowercase: true,
-      trim: true,
-    },
-
-    password: {
-      type: String,
-      required: true,
-    },
-
-    balance: {
-      type: Number,
-      default: 0,
-    },
-
-    deposited: {
-      type: Number,
-      default: 0,
-    },
-
-    withdrawn: {
-      type: Number,
-      default: 0,
-    },
-  },
-  {
-    timestamps: true,
-  }
-);
+    {
+      timestamps: true,
+    }
+  );
 
 const User =
   mongoose.models.User ||
-  mongoose.model("User", userSchema);
+  mongoose.model(
+    "User",
+    userSchema
+  );
 
 /* =====================================================
    TRANSACTION MODEL
 ===================================================== */
 
-const transactionSchema = new mongoose.Schema(
-  {
-    userId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
-      required: true,
+const transactionSchema =
+  new mongoose.Schema(
+    {
+      userId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+        required: true,
+      },
+
+      transactionId: {
+        type: String,
+        required: true,
+        unique: true,
+      },
+
+      type: {
+        type: String,
+        enum: [
+          "deposit",
+          "withdrawal",
+        ],
+        required: true,
+      },
+
+      amount: {
+        type: Number,
+        required: true,
+      },
+
+      paymentMethod: {
+        type: String,
+        default: "Bank Transfer",
+      },
+
+      accountNumber: {
+        type: String,
+        default: "",
+      },
+
+      accountName: {
+        type: String,
+        default: "",
+      },
+
+      status: {
+        type: String,
+        enum: [
+          "pending",
+          "processing",
+          "completed",
+          "failed",
+        ],
+        default: "pending",
+      },
     },
 
-    transactionId: {
-      type: String,
-      required: true,
-      unique: true,
-    },
-
-    type: {
-      type: String,
-      enum: [
-        "deposit",
-        "withdrawal",
-      ],
-      required: true,
-    },
-
-    amount: {
-      type: Number,
-      required: true,
-    },
-
-    paymentMethod: {
-      type: String,
-      default: "Bank Transfer",
-    },
-
-    accountNumber: {
-      type: String,
-      default: "",
-    },
-
-    accountName: {
-      type: String,
-      default: "",
-    },
-
-    status: {
-      type: String,
-      enum: [
-        "pending",
-        "processing",
-        "completed",
-        "failed",
-      ],
-      default: "pending",
-    },
-  },
-  {
-    timestamps: true,
-  }
-);
+    {
+      timestamps: true,
+    }
+  );
 
 const Transaction =
   mongoose.models.Transaction ||
@@ -288,6 +302,7 @@ const withdrawalAccountSchema =
         default: false,
       },
     },
+
     {
       timestamps: true,
     }
@@ -314,7 +329,7 @@ function generateId() {
 }
 
 /* =====================================================
-   AUTHENTICATION MIDDLEWARE
+   AUTHENTICATION
 ===================================================== */
 
 async function authenticate(
@@ -327,7 +342,7 @@ async function authenticate(
       return res.status(500).json({
         success: false,
         message:
-          "JWT_SECRET is not configured.",
+          "JWT_SECRET is not configured on the server.",
       });
     }
 
@@ -383,7 +398,7 @@ async function authenticate(
     next();
   } catch (error) {
     console.error(
-      "AUTHENTICATION ERROR:",
+      "AUTH ERROR:",
       error
     );
 
@@ -396,7 +411,7 @@ async function authenticate(
 }
 
 /* =====================================================
-   API ROOT
+   ROOT
 ===================================================== */
 
 app.get("/", async (req, res) => {
@@ -413,7 +428,7 @@ app.get("/", async (req, res) => {
     });
   } catch (error) {
     console.error(
-      "API ROOT ERROR:",
+      "ROOT ERROR:",
       error
     );
 
@@ -426,7 +441,7 @@ app.get("/", async (req, res) => {
 });
 
 /* =====================================================
-   API TEST
+   TEST
 ===================================================== */
 
 app.get(
@@ -439,6 +454,7 @@ app.get(
         success: true,
         message:
           "Elonixx backend is connected successfully!",
+        database: "connected",
       });
     } catch (error) {
       console.error(
@@ -450,39 +466,8 @@ app.get(
         success: false,
         message:
           "Backend cannot connect to MongoDB.",
-      });
-    }
-  }
-);
-
-/* =====================================================
-   HOME
-===================================================== */
-
-app.get(
-  "/api/home",
-  async (req, res) => {
-    try {
-      await connectDatabase();
-
-      return res.json({
-        success: true,
-        app: "ElonixxWallet",
-        message:
-          "Welcome to ElonixxWallet.",
-        status: "online",
-        secure: true,
-      });
-    } catch (error) {
-      console.error(
-        "HOME ERROR:",
-        error
-      );
-
-      return res.status(500).json({
-        success: false,
-        message:
-          "Unable to connect to database.",
+        error:
+          error.message,
       });
     }
   }
@@ -495,22 +480,75 @@ app.get(
 app.post(
   "/api/register",
   async (req, res) => {
-    try {
-      await connectDatabase();
+    console.log(
+      "================================="
+    );
 
-      if (!JWT_SECRET) {
+    console.log(
+      "REGISTRATION REQUEST RECEIVED"
+    );
+
+    console.log(
+      "================================="
+    );
+
+    try {
+      /* ---------------------------------------------
+         CHECK ENVIRONMENT
+      --------------------------------------------- */
+
+      if (!MONGODB_URI) {
+        console.error(
+          "MONGODB_URI is missing."
+        );
+
         return res.status(500).json({
           success: false,
           message:
-            "JWT_SECRET is not configured.",
+            "Server database configuration is missing.",
         });
       }
+
+      if (!JWT_SECRET) {
+        console.error(
+          "JWT_SECRET is missing."
+        );
+
+        return res.status(500).json({
+          success: false,
+          message:
+            "Server authentication configuration is missing.",
+        });
+      }
+
+      /* ---------------------------------------------
+         CONNECT DATABASE
+      --------------------------------------------- */
+
+      await connectDatabase();
+
+      console.log(
+        "Database ready for registration."
+      );
+
+      /* ---------------------------------------------
+         READ REQUEST
+      --------------------------------------------- */
 
       const {
         name,
         email,
         password,
-      } = req.body;
+      } = req.body || {};
+
+      console.log(
+        "Registration email:",
+        email
+      );
+
+      /* ---------------------------------------------
+         VALIDATION
+      --------------------------------------------- */
 
       if (
         !name ||
@@ -527,7 +565,7 @@ app.post(
       const cleanName =
         String(name).trim();
 
-      const normalizedEmail =
+      const cleanEmail =
         String(email)
           .trim()
           .toLowerCase();
@@ -543,6 +581,14 @@ app.post(
         });
       }
 
+      if (cleanEmail.length < 5) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Please enter a valid email address.",
+        });
+      }
+
       if (cleanPassword.length < 6) {
         return res.status(400).json({
           success: false,
@@ -551,13 +597,24 @@ app.post(
         });
       }
 
+      /* ---------------------------------------------
+         CHECK EXISTING USER
+      --------------------------------------------- */
+
+      console.log(
+        "Checking whether email already exists..."
+      );
+
       const existingUser =
         await User.findOne({
-          email:
-            normalizedEmail,
+          email: cleanEmail,
         });
 
       if (existingUser) {
+        console.log(
+          "Registration rejected: email already exists."
+        );
+
         return res.status(409).json({
           success: false,
           message:
@@ -565,21 +622,52 @@ app.post(
         });
       }
 
+      /* ---------------------------------------------
+         HASH PASSWORD
+      --------------------------------------------- */
+
+      console.log(
+        "Hashing password..."
+      );
+
       const hashedPassword =
         await bcrypt.hash(
           cleanPassword,
           12
         );
 
+      /* ---------------------------------------------
+         CREATE USER
+      --------------------------------------------- */
+
+      console.log(
+        "Creating MongoDB user..."
+      );
+
       const user =
-        await User.create({
+        new User({
           name: cleanName,
-          email: normalizedEmail,
+          email: cleanEmail,
           password: hashedPassword,
           balance: 0,
           deposited: 0,
           withdrawn: 0,
         });
+
+      await user.save();
+
+      console.log(
+        "User created:",
+        user._id.toString()
+      );
+
+      /* ---------------------------------------------
+         CREATE JWT
+      --------------------------------------------- */
+
+      console.log(
+        "Creating authentication token..."
+      );
 
       const token =
         jwt.sign(
@@ -592,6 +680,10 @@ app.post(
             expiresIn: "7d",
           }
         );
+
+      /* ---------------------------------------------
+         SUCCESS
+      --------------------------------------------- */
 
       return res.status(201).json({
         success: true,
@@ -622,12 +714,49 @@ app.post(
         token,
       });
     } catch (error) {
+      /* ---------------------------------------------
+         LOG THE REAL ERROR
+      --------------------------------------------- */
+
       console.error(
-        "REGISTER ERROR:",
+        "================================="
+      );
+
+      console.error(
+        "REGISTRATION ERROR"
+      );
+
+      console.error(
+        "================================="
+      );
+
+      console.error(
+        "Name:",
+        error?.name
+      );
+
+      console.error(
+        "Message:",
+        error?.message
+      );
+
+      console.error(
+        "Code:",
+        error?.code
+      );
+
+      console.error(
+        "Full error:",
         error
       );
 
-      if (error.code === 11000) {
+      /* ---------------------------------------------
+         DUPLICATE EMAIL
+      --------------------------------------------- */
+
+      if (
+        error?.code === 11000
+      ) {
         return res.status(409).json({
           success: false,
           message:
@@ -635,10 +764,83 @@ app.post(
         });
       }
 
+      /* ---------------------------------------------
+         MONGOOSE VALIDATION
+      --------------------------------------------- */
+
+      if (
+        error?.name ===
+        "ValidationError"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Invalid account information.",
+          details:
+            Object.values(
+              error.errors || {}
+            )
+              .map(
+                (item) =>
+                  item.message
+              )
+              .join(", "),
+        });
+      }
+
+      /* ---------------------------------------------
+         JWT ERROR
+      --------------------------------------------- */
+
+      if (
+        error?.name ===
+        "JsonWebTokenError"
+      ) {
+        return res.status(500).json({
+          success: false,
+          message:
+            "Unable to create authentication token.",
+        });
+      }
+
+      /* ---------------------------------------------
+         DATABASE ERROR
+      --------------------------------------------- */
+
+      if (
+        error?.name ===
+          "MongoServerError" ||
+        error?.name ===
+          "MongooseServerSelectionError"
+      ) {
+        return res.status(500).json({
+          success: false,
+          message:
+            "Database error while creating the account.",
+          details:
+            error.message,
+        });
+      }
+
+      /* ---------------------------------------------
+         UNKNOWN ERROR
+      --------------------------------------------- */
+
       return res.status(500).json({
         success: false,
+
         message:
           "Unable to create account.",
+
+        /*
+         * This will help us identify the
+         * exact problem if another server
+         * error occurs.
+         */
+
+        details:
+          error?.message ||
+          "Unknown server error.",
       });
     }
   }
@@ -665,7 +867,7 @@ app.post(
       const {
         email,
         password,
-      } = req.body;
+      } = req.body || {};
 
       if (
         !email ||
@@ -761,6 +963,8 @@ app.post(
         success: false,
         message:
           "Unable to login.",
+        details:
+          error?.message,
       });
     }
   }
@@ -877,7 +1081,7 @@ app.get(
 );
 
 /* =====================================================
-   GET WITHDRAWAL ACCOUNTS
+   WITHDRAWAL ACCOUNTS
 ===================================================== */
 
 app.get(
@@ -930,7 +1134,7 @@ app.post(
         provider,
         accountName,
         accountNumber,
-      } = req.body;
+      } = req.body || {};
 
       if (
         !provider ||
@@ -943,15 +1147,6 @@ app.post(
             "Provider, account name and account number are required.",
         });
       }
-
-      const cleanProvider =
-        String(provider).trim();
-
-      const cleanAccountName =
-        String(accountName).trim();
-
-      const cleanAccountNumber =
-        String(accountNumber).trim();
 
       const accountCount =
         await WithdrawalAccount.countDocuments(
@@ -967,13 +1162,13 @@ app.post(
             req.user._id,
 
           provider:
-            cleanProvider,
+            String(provider).trim(),
 
           accountName:
-            cleanAccountName,
+            String(accountName).trim(),
 
           accountNumber:
-            cleanAccountNumber,
+            String(accountNumber).trim(),
 
           isDefault:
             accountCount === 0,
@@ -981,10 +1176,8 @@ app.post(
 
       return res.status(201).json({
         success: true,
-
         message:
           "Withdrawal account added successfully.",
-
         account,
       });
     } catch (error) {
@@ -1018,7 +1211,7 @@ app.post(
         accountNumber,
         accountName,
         paymentMethod,
-      } = req.body;
+      } = req.body || {};
 
       const numericAmount =
         Number(amount);
