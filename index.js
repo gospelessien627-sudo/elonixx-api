@@ -46,9 +46,8 @@ const allowedOrigins = [
 
 app.use(
   cors({
-    origin: function (origin, callback) {
+    origin: (origin, callback) => {
       // Allow requests without an Origin header
-      // such as server-to-server requests.
       if (!origin) {
         return callback(null, true);
       }
@@ -80,6 +79,10 @@ app.use(
   })
 );
 
+/* =====================================================
+   JSON
+===================================================== */
+
 app.use(express.json());
 
 /* =====================================================
@@ -95,10 +98,12 @@ async function connectDatabase() {
     );
   }
 
+  // Already connected
   if (mongoose.connection.readyState === 1) {
     return mongoose.connection;
   }
 
+  // Connection already being established
   if (mongoConnection) {
     return mongoConnection;
   }
@@ -1109,7 +1114,7 @@ app.post(
 );
 
 /* =====================================================
-   EXPLICIT UNKNOWN API ROUTE
+   API 404
 ===================================================== */
 
 app.use(
