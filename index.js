@@ -8,10 +8,6 @@ import jwt from "jsonwebtoken";
 
 dotenv.config();
 
-/* =====================================================
-   DNS
-===================================================== */
-
 dns.setServers(["1.1.1.1", "8.8.8.8"]);
 
 /* =====================================================
@@ -51,11 +47,8 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: function (origin, callback) {
-      /*
-        Allow requests without an origin.
-        Useful for Postman and server-to-server requests.
-      */
-
+      // Allow requests without an Origin header
+      // such as server-to-server requests.
       if (!origin) {
         return callback(null, true);
       }
@@ -78,6 +71,11 @@ app.use(
       "OPTIONS",
     ],
 
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+    ],
+
     credentials: true,
   })
 );
@@ -97,24 +95,18 @@ async function connectDatabase() {
     );
   }
 
-  /*
-    Reuse an existing connection.
-  */
-
   if (mongoose.connection.readyState === 1) {
     return mongoose.connection;
   }
-
-  /*
-    Reuse an existing connection promise.
-  */
 
   if (mongoConnection) {
     return mongoConnection;
   }
 
   mongoConnection = mongoose
-    .connect(MONGODB_URI)
+    .connect(MONGODB_URI, {
+      serverSelectionTimeoutMS: 10000,
+    })
     .then((connection) => {
       console.log(
         "MongoDB connected successfully."
@@ -176,7 +168,6 @@ const userSchema = new mongoose.Schema(
       default: 0,
     },
   },
-
   {
     timestamps: true,
   }
@@ -184,76 +175,70 @@ const userSchema = new mongoose.Schema(
 
 const User =
   mongoose.models.User ||
-  mongoose.model(
-    "User",
-    userSchema
-  );
+  mongoose.model("User", userSchema);
 
 /* =====================================================
    TRANSACTION MODEL
 ===================================================== */
 
-const transactionSchema =
-  new mongoose.Schema(
-    {
-      userId: {
-        type:
-          mongoose.Schema.Types.ObjectId,
-        ref: "User",
-        required: true,
-      },
-
-      transactionId: {
-        type: String,
-        required: true,
-        unique: true,
-      },
-
-      type: {
-        type: String,
-        enum: [
-          "deposit",
-          "withdrawal",
-        ],
-        required: true,
-      },
-
-      amount: {
-        type: Number,
-        required: true,
-      },
-
-      paymentMethod: {
-        type: String,
-        default: "Bank Transfer",
-      },
-
-      accountNumber: {
-        type: String,
-        default: "",
-      },
-
-      accountName: {
-        type: String,
-        default: "",
-      },
-
-      status: {
-        type: String,
-        enum: [
-          "pending",
-          "processing",
-          "completed",
-          "failed",
-        ],
-        default: "pending",
-      },
+const transactionSchema = new mongoose.Schema(
+  {
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
     },
 
-    {
-      timestamps: true,
-    }
-  );
+    transactionId: {
+      type: String,
+      required: true,
+      unique: true,
+    },
+
+    type: {
+      type: String,
+      enum: [
+        "deposit",
+        "withdrawal",
+      ],
+      required: true,
+    },
+
+    amount: {
+      type: Number,
+      required: true,
+    },
+
+    paymentMethod: {
+      type: String,
+      default: "Bank Transfer",
+    },
+
+    accountNumber: {
+      type: String,
+      default: "",
+    },
+
+    accountName: {
+      type: String,
+      default: "",
+    },
+
+    status: {
+      type: String,
+      enum: [
+        "pending",
+        "processing",
+        "completed",
+        "failed",
+      ],
+      default: "pending",
+    },
+  },
+  {
+    timestamps: true,
+  }
+);
 
 const Transaction =
   mongoose.models.Transaction ||
@@ -270,8 +255,7 @@ const withdrawalAccountSchema =
   new mongoose.Schema(
     {
       userId: {
-        type:
-          mongoose.Schema.Types.ObjectId,
+        type: mongoose.Schema.Types.ObjectId,
         ref: "User",
         required: true,
       },
@@ -299,7 +283,6 @@ const withdrawalAccountSchema =
         default: false,
       },
     },
-
     {
       timestamps: true,
     }
@@ -313,7 +296,7 @@ const WithdrawalAccount =
   );
 
 /* =====================================================
-   HELPER
+   GENERATE TRANSACTION ID
 ===================================================== */
 
 function generateId() {
@@ -326,7 +309,7 @@ function generateId() {
 }
 
 /* =====================================================
-   AUTHENTICATION
+   AUTHENTICATION MIDDLEWARE
 ===================================================== */
 
 async function authenticate(
@@ -408,35 +391,34 @@ async function authenticate(
 }
 
 /* =====================================================
-   API HOME
+   API ROOT
 ===================================================== */
 
-app.get(
-  "/",
-  async (req, res) => {
-    try {
-      await connectDatabase();
+app.get("/", async (req, res) => {
+  try {
+    await connectDatabase();
 
-      return res.json({
-        success: true,
-        message:
-          "Elonixx API is running 🚀",
-        status: "online",
-      });
-    } catch (error) {
-      console.error(
-        "API HOME ERROR:",
-        error
-      );
+    return res.json({
+      success: true,
+      message:
+        "Elonixx API is running 🚀",
+      status: "online",
+      database: "connected",
+      chat: "disabled",
+    });
+  } catch (error) {
+    console.error(
+      "API ROOT ERROR:",
+      error
+    );
 
-      return res.status(500).json({
-        success: false,
-        message:
-          "Database connection failed.",
-      });
-    }
+    return res.status(500).json({
+      success: false,
+      message:
+        "Database connection failed.",
+    });
   }
-);
+});
 
 /* =====================================================
    API TEST
@@ -480,9 +462,9 @@ app.get(
 
       return res.json({
         success: true,
-        app: "ElonixWallet",
+        app: "ElonixxWallet",
         message:
-          "Welcome to ElonixWallet.",
+          "Welcome to ElonixxWallet.",
         status: "online",
         secure: true,
       });
@@ -542,12 +524,13 @@ app.post(
 
       const normalizedEmail =
         String(email)
-          .toLowerCase()
-          .trim();
+          .trim()
+          .toLowerCase();
 
-      if (
-        cleanName.length < 2
-      ) {
+      const cleanPassword =
+        String(password);
+
+      if (cleanName.length < 2) {
         return res.status(400).json({
           success: false,
           message:
@@ -555,9 +538,7 @@ app.post(
         });
       }
 
-      if (
-        String(password).length < 6
-      ) {
+      if (cleanPassword.length < 6) {
         return res.status(400).json({
           success: false,
           message:
@@ -581,24 +562,17 @@ app.post(
 
       const hashedPassword =
         await bcrypt.hash(
-          String(password),
+          cleanPassword,
           12
         );
 
       const user =
         await User.create({
           name: cleanName,
-
-          email:
-            normalizedEmail,
-
-          password:
-            hashedPassword,
-
+          email: normalizedEmail,
+          password: hashedPassword,
           balance: 0,
-
           deposited: 0,
-
           withdrawn: 0,
         });
 
@@ -608,9 +582,7 @@ app.post(
             userId:
               user._id.toString(),
           },
-
           JWT_SECRET,
-
           {
             expiresIn: "7d",
           }
@@ -650,9 +622,7 @@ app.post(
         error
       );
 
-      if (
-        error.code === 11000
-      ) {
+      if (error.code === 11000) {
         return res.status(409).json({
           success: false,
           message:
@@ -705,8 +675,8 @@ app.post(
 
       const normalizedEmail =
         String(email)
-          .toLowerCase()
-          .trim();
+          .trim()
+          .toLowerCase();
 
       const user =
         await User.findOne({
@@ -742,9 +712,7 @@ app.post(
             userId:
               user._id.toString(),
           },
-
           JWT_SECRET,
-
           {
             expiresIn: "7d",
           }
@@ -904,7 +872,7 @@ app.get(
 );
 
 /* =====================================================
-   WITHDRAWAL ACCOUNTS
+   GET WITHDRAWAL ACCOUNTS
 ===================================================== */
 
 app.get(
@@ -980,23 +948,13 @@ app.post(
       const cleanAccountNumber =
         String(accountNumber).trim();
 
-      if (
-        !cleanProvider ||
-        !cleanAccountName ||
-        !cleanAccountNumber
-      ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "All withdrawal account fields are required.",
-        });
-      }
-
       const accountCount =
-        await WithdrawalAccount.countDocuments({
-          userId:
-            req.user._id,
-        });
+        await WithdrawalAccount.countDocuments(
+          {
+            userId:
+              req.user._id,
+          }
+        );
 
       const account =
         await WithdrawalAccount.create({
@@ -1151,7 +1109,24 @@ app.post(
 );
 
 /* =====================================================
-   404
+   EXPLICIT UNKNOWN API ROUTE
+===================================================== */
+
+app.use(
+  "/api",
+  (req, res) => {
+    return res.status(404).json({
+      success: false,
+      message:
+        "API endpoint not found.",
+      path:
+        req.path,
+    });
+  }
+);
+
+/* =====================================================
+   GENERAL 404
 ===================================================== */
 
 app.use(
@@ -1167,7 +1142,7 @@ app.use(
 );
 
 /* =====================================================
-   VERCEL EXPORT
+   VERCEL
 ===================================================== */
 
 export default app;
