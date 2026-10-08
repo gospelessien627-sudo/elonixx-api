@@ -19,6 +19,12 @@ const app = express();
 const MONGODB_URI = process.env.MONGODB_URI;
 const JWT_SECRET = process.env.JWT_SECRET;
 
+const ADMIN_EMAIL =
+  process.env.ADMIN_EMAIL;
+
+const ADMIN_PASSWORD =
+  process.env.ADMIN_PASSWORD;
+
 /* =====================================================
    ENVIRONMENT CHECK
 ===================================================== */
@@ -35,6 +41,16 @@ console.log(
 console.log(
   "JWT_SECRET:",
   JWT_SECRET ? "FOUND" : "MISSING"
+);
+
+console.log(
+  "ADMIN_EMAIL:",
+  ADMIN_EMAIL ? "FOUND" : "MISSING"
+);
+
+console.log(
+  "ADMIN_PASSWORD:",
+  ADMIN_PASSWORD ? "FOUND" : "MISSING"
 );
 
 /* =====================================================
@@ -329,7 +345,7 @@ function generateId() {
 }
 
 /* =====================================================
-   AUTHENTICATION
+   USER AUTHENTICATION
 ===================================================== */
 
 async function authenticate(
@@ -378,6 +394,21 @@ async function authenticate(
         JWT_SECRET
       );
 
+    /*
+     * Admin tokens must not be accepted
+     * by normal user routes.
+     */
+
+    if (
+      decoded.role === "admin"
+    ) {
+      return res.status(403).json({
+        success: false,
+        message:
+          "Administrator token cannot access this route.",
+      });
+    }
+
     await connectDatabase();
 
     const user =
@@ -406,6 +437,99 @@ async function authenticate(
       success: false,
       message:
         "Invalid or expired token.",
+    });
+  }
+}
+
+/* =====================================================
+   ADMIN AUTHENTICATION
+===================================================== */
+
+async function authenticateAdmin(
+  req,
+  res,
+  next
+) {
+  try {
+    if (!JWT_SECRET) {
+      return res.status(500).json({
+        success: false,
+        message:
+          "JWT_SECRET is not configured on the server.",
+      });
+    }
+
+    const authorization =
+      req.headers.authorization;
+
+    if (!authorization) {
+      return res.status(401).json({
+        success: false,
+        message:
+          "Admin authentication required.",
+      });
+    }
+
+    if (
+      !authorization.startsWith(
+        "Bearer "
+      )
+    ) {
+      return res.status(401).json({
+        success: false,
+        message:
+          "Invalid authorization format.",
+      });
+    }
+
+    const token =
+      authorization.substring(7);
+
+    const decoded =
+      jwt.verify(
+        token,
+        JWT_SECRET
+      );
+
+    if (
+      decoded.role !== "admin"
+    ) {
+      return res.status(403).json({
+        success: false,
+        message:
+          "Administrator access required.",
+      });
+    }
+
+    if (
+      decoded.adminEmail !==
+      ADMIN_EMAIL
+    ) {
+      return res.status(403).json({
+        success: false,
+        message:
+          "Invalid administrator account.",
+      });
+    }
+
+    req.admin = {
+      email:
+        decoded.adminEmail,
+      role:
+        decoded.role,
+    };
+
+    next();
+  } catch (error) {
+    console.error(
+      "ADMIN AUTH ERROR:",
+      error
+    );
+
+    return res.status(401).json({
+      success: false,
+      message:
+        "Invalid or expired admin token.",
     });
   }
 }
@@ -493,10 +617,6 @@ app.post(
     );
 
     try {
-      /* ---------------------------------------------
-         CHECK ENVIRONMENT
-      --------------------------------------------- */
-
       if (!MONGODB_URI) {
         console.error(
           "MONGODB_URI is missing."
@@ -521,19 +641,11 @@ app.post(
         });
       }
 
-      /* ---------------------------------------------
-         CONNECT DATABASE
-      --------------------------------------------- */
-
       await connectDatabase();
 
       console.log(
         "Database ready for registration."
       );
-
-      /* ---------------------------------------------
-         READ REQUEST
-      --------------------------------------------- */
 
       const {
         name,
@@ -545,10 +657,6 @@ app.post(
         "Registration email:",
         email
       );
-
-      /* ---------------------------------------------
-         VALIDATION
-      --------------------------------------------- */
 
       if (
         !name ||
@@ -597,10 +705,6 @@ app.post(
         });
       }
 
-      /* ---------------------------------------------
-         CHECK EXISTING USER
-      --------------------------------------------- */
-
       console.log(
         "Checking whether email already exists..."
       );
@@ -622,10 +726,6 @@ app.post(
         });
       }
 
-      /* ---------------------------------------------
-         HASH PASSWORD
-      --------------------------------------------- */
-
       console.log(
         "Hashing password..."
       );
@@ -635,10 +735,6 @@ app.post(
           cleanPassword,
           12
         );
-
-      /* ---------------------------------------------
-         CREATE USER
-      --------------------------------------------- */
 
       console.log(
         "Creating MongoDB user..."
@@ -661,10 +757,6 @@ app.post(
         user._id.toString()
       );
 
-      /* ---------------------------------------------
-         CREATE JWT
-      --------------------------------------------- */
-
       console.log(
         "Creating authentication token..."
       );
@@ -674,16 +766,14 @@ app.post(
           {
             userId:
               user._id.toString(),
+            role:
+              "user",
           },
           JWT_SECRET,
           {
             expiresIn: "7d",
           }
         );
-
-      /* ---------------------------------------------
-         SUCCESS
-      --------------------------------------------- */
 
       return res.status(201).json({
         success: true,
@@ -714,10 +804,6 @@ app.post(
         token,
       });
     } catch (error) {
-      /* ---------------------------------------------
-         LOG THE REAL ERROR
-      --------------------------------------------- */
-
       console.error(
         "================================="
       );
@@ -750,10 +836,6 @@ app.post(
         error
       );
 
-      /* ---------------------------------------------
-         DUPLICATE EMAIL
-      --------------------------------------------- */
-
       if (
         error?.code === 11000
       ) {
@@ -763,10 +845,6 @@ app.post(
             "An account with this email already exists.",
         });
       }
-
-      /* ---------------------------------------------
-         MONGOOSE VALIDATION
-      --------------------------------------------- */
 
       if (
         error?.name ===
@@ -788,10 +866,6 @@ app.post(
         });
       }
 
-      /* ---------------------------------------------
-         JWT ERROR
-      --------------------------------------------- */
-
       if (
         error?.name ===
         "JsonWebTokenError"
@@ -802,10 +876,6 @@ app.post(
             "Unable to create authentication token.",
         });
       }
-
-      /* ---------------------------------------------
-         DATABASE ERROR
-      --------------------------------------------- */
 
       if (
         error?.name ===
@@ -822,21 +892,11 @@ app.post(
         });
       }
 
-      /* ---------------------------------------------
-         UNKNOWN ERROR
-      --------------------------------------------- */
-
       return res.status(500).json({
         success: false,
 
         message:
           "Unable to create account.",
-
-        /*
-         * This will help us identify the
-         * exact problem if another server
-         * error occurs.
-         */
 
         details:
           error?.message ||
@@ -854,8 +914,6 @@ app.post(
   "/api/login",
   async (req, res) => {
     try {
-      await connectDatabase();
-
       if (!JWT_SECRET) {
         return res.status(500).json({
           success: false,
@@ -884,6 +942,61 @@ app.post(
         String(email)
           .trim()
           .toLowerCase();
+
+      /* =================================================
+         ADMIN LOGIN
+      ================================================= */
+
+      if (
+        ADMIN_EMAIL &&
+        ADMIN_PASSWORD &&
+        normalizedEmail ===
+          ADMIN_EMAIL
+            .trim()
+            .toLowerCase() &&
+        String(password) ===
+          String(ADMIN_PASSWORD)
+      ) {
+        const adminToken =
+          jwt.sign(
+            {
+              role:
+                "admin",
+
+              adminEmail:
+                ADMIN_EMAIL
+                  .trim()
+                  .toLowerCase(),
+            },
+            JWT_SECRET,
+            {
+              expiresIn: "7d",
+            }
+          );
+
+        return res.json({
+          success: true,
+
+          role: "admin",
+
+          message:
+            "Admin login successful.",
+
+          email:
+            ADMIN_EMAIL
+              .trim()
+              .toLowerCase(),
+
+          token:
+            adminToken,
+        });
+      }
+
+      /* =================================================
+         NORMAL USER LOGIN
+      ================================================= */
+
+      await connectDatabase();
 
       const user =
         await User.findOne({
@@ -918,6 +1031,9 @@ app.post(
           {
             userId:
               user._id.toString(),
+
+            role:
+              "user",
           },
           JWT_SECRET,
           {
@@ -927,6 +1043,8 @@ app.post(
 
       return res.json({
         success: true,
+
+        role: "user",
 
         message:
           "Login successful.",
@@ -1301,6 +1419,227 @@ app.post(
         success: false,
         message:
           "Unable to create withdrawal request.",
+      });
+    }
+  }
+);
+
+/* =====================================================
+   ADMIN OVERVIEW
+===================================================== */
+
+app.get(
+  "/api/admin/overview",
+  authenticateAdmin,
+  async (req, res) => {
+    try {
+      await connectDatabase();
+
+      const [
+        totalUsers,
+        totalTransactions,
+        totalWithdrawals,
+        pendingWithdrawals,
+        completedWithdrawals,
+        users,
+      ] = await Promise.all([
+        User.countDocuments(),
+
+        Transaction.countDocuments(),
+
+        Transaction.countDocuments({
+          type: "withdrawal",
+        }),
+
+        Transaction.countDocuments({
+          type: "withdrawal",
+          status: "pending",
+        }),
+
+        Transaction.countDocuments({
+          type: "withdrawal",
+          status: "completed",
+        }),
+
+        User.find()
+          .select("-password")
+          .sort({
+            createdAt: -1,
+          }),
+      ]);
+
+      return res.json({
+        success: true,
+
+        statistics: {
+          totalUsers,
+
+          totalTransactions,
+
+          totalWithdrawals,
+
+          pendingWithdrawals,
+
+          completedWithdrawals,
+        },
+
+        users,
+      });
+    } catch (error) {
+      console.error(
+        "ADMIN OVERVIEW ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message:
+          "Unable to load admin overview.",
+      });
+    }
+  }
+);
+
+/* =====================================================
+   ADMIN WITHDRAWALS
+===================================================== */
+
+app.get(
+  "/api/admin/withdrawals",
+  authenticateAdmin,
+  async (req, res) => {
+    try {
+      await connectDatabase();
+
+      const withdrawals =
+        await Transaction.find({
+          type:
+            "withdrawal",
+        })
+          .populate(
+            "userId",
+            "-password"
+          )
+          .sort({
+            createdAt: -1,
+          });
+
+      return res.json({
+        success: true,
+
+        withdrawals,
+      });
+    } catch (error) {
+      console.error(
+        "ADMIN WITHDRAWALS ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message:
+          "Unable to load withdrawals.",
+      });
+    }
+  }
+);
+
+/* =====================================================
+   ADMIN UPDATE WITHDRAWAL STATUS
+===================================================== */
+
+app.patch(
+  "/api/admin/withdrawals/:id/status",
+  authenticateAdmin,
+  async (req, res) => {
+    try {
+      await connectDatabase();
+
+      const {
+        id,
+      } = req.params;
+
+      const {
+        status,
+      } = req.body || {};
+
+      const allowedStatuses = [
+        "pending",
+        "processing",
+        "completed",
+        "failed",
+      ];
+
+      if (
+        !allowedStatuses.includes(
+          status
+        )
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Invalid withdrawal status.",
+        });
+      }
+
+      const withdrawal =
+        await Transaction.findOne({
+          _id: id,
+          type:
+            "withdrawal",
+        });
+
+      if (!withdrawal) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Withdrawal request not found.",
+        });
+      }
+
+      withdrawal.status =
+        status;
+
+      await withdrawal.save();
+
+      const updatedWithdrawal =
+        await Transaction.findById(
+          withdrawal._id
+        ).populate(
+          "userId",
+          "-password"
+        );
+
+      return res.json({
+        success: true,
+
+        message:
+          "Withdrawal status updated successfully.",
+
+        withdrawal:
+          updatedWithdrawal,
+      });
+    } catch (error) {
+      console.error(
+        "ADMIN UPDATE WITHDRAWAL ERROR:",
+        error
+      );
+
+      if (
+        error?.name ===
+        "CastError"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Invalid withdrawal ID.",
+        });
+      }
+
+      return res.status(500).json({
+        success: false,
+        message:
+          "Unable to update withdrawal status.",
       });
     }
   }
