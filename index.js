@@ -1,10 +1,10 @@
 import express from "express";
-import cors from "cors";
-import dns from "node:dns/promises";
 import mongoose from "mongoose";
-import dotenv from "dotenv";
+import dns from "node:dns/promises";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import cors from "cors";
+import dotenv from "dotenv";
 
 dotenv.config();
 
@@ -12,317 +12,227 @@ dns.setServers(["1.1.1.1", "8.8.8.8"]);
 
 const app = express();
 
-/* =====================================================
+/* =========================================================
    ENVIRONMENT VARIABLES
-===================================================== */
+========================================================= */
 
 const MONGODB_URI = process.env.MONGODB_URI;
 const JWT_SECRET = process.env.JWT_SECRET;
 
-const ADMIN_EMAIL =
-  process.env.ADMIN_EMAIL;
+const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || "")
+  .trim()
+  .toLowerCase();
 
-const ADMIN_PASSWORD =
-  process.env.ADMIN_PASSWORD;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
 
-/* =====================================================
-   ENVIRONMENT CHECK
-===================================================== */
+if (!MONGODB_URI) {
+  console.warn("WARNING: MONGODB_URI is not configured.");
+}
 
-console.log("=================================");
-console.log("ELONIXX BACKEND STARTING");
-console.log("=================================");
+if (!JWT_SECRET) {
+  console.warn("WARNING: JWT_SECRET is not configured.");
+}
 
-console.log(
-  "MONGODB_URI:",
-  MONGODB_URI ? "FOUND" : "MISSING"
-);
+if (!ADMIN_EMAIL || !ADMIN_PASSWORD) {
+  console.warn(
+    "WARNING: ADMIN_EMAIL or ADMIN_PASSWORD is not configured."
+  );
+}
 
-console.log(
-  "JWT_SECRET:",
-  JWT_SECRET ? "FOUND" : "MISSING"
-);
-
-console.log(
-  "ADMIN_EMAIL:",
-  ADMIN_EMAIL ? "FOUND" : "MISSING"
-);
-
-console.log(
-  "ADMIN_PASSWORD:",
-  ADMIN_PASSWORD ? "FOUND" : "MISSING"
-);
-
-/* =====================================================
-   CORS
-===================================================== */
-
-const allowedOrigins = [
-  "https://elonixx.com",
-  "https://www.elonixx.com",
-];
+/* =========================================================
+   MIDDLEWARE
+========================================================= */
 
 app.use(
   cors({
-    origin: (origin, callback) => {
-      if (!origin) {
-        return callback(null, true);
-      }
-
-      if (allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
-
-      console.log(
-        "Blocked CORS origin:",
-        origin
-      );
-
-      return callback(
-        new Error("Not allowed by CORS")
-      );
-    },
-
-    methods: [
-      "GET",
-      "POST",
-      "PUT",
-      "PATCH",
-      "DELETE",
-      "OPTIONS",
-    ],
-
-    allowedHeaders: [
-      "Content-Type",
-      "Authorization",
-    ],
-
+    origin: true,
     credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 
-/* =====================================================
-   JSON
-===================================================== */
-
 app.use(express.json());
 
-/* =====================================================
-   DATABASE CONNECTION
-===================================================== */
+app.use(express.urlencoded({ extended: true }));
 
-let mongoConnection = null;
+/* =========================================================
+   MONGODB CONNECTION
+========================================================= */
 
-async function connectDatabase() {
+let cachedConnection = null;
+
+async function connectDB() {
+  if (cachedConnection) {
+    return cachedConnection;
+  }
+
   if (!MONGODB_URI) {
-    throw new Error(
-      "MONGODB_URI environment variable is missing."
-    );
+    throw new Error("MONGODB_URI is missing.");
   }
 
-  if (
-    mongoose.connection.readyState === 1
-  ) {
-    return mongoose.connection;
-  }
+  cachedConnection = await mongoose.connect(MONGODB_URI, {
+    serverSelectionTimeoutMS: 10000,
+  });
 
-  if (mongoConnection) {
-    return mongoConnection;
-  }
+  console.log("MongoDB connected");
 
-  mongoConnection = mongoose
-    .connect(MONGODB_URI, {
-      serverSelectionTimeoutMS: 10000,
-      connectTimeoutMS: 10000,
-    })
-    .then((connection) => {
-      console.log(
-        "MongoDB connected successfully."
-      );
-
-      return connection;
-    })
-    .catch((error) => {
-      mongoConnection = null;
-
-      console.error(
-        "MongoDB connection failed:",
-        error
-      );
-
-      throw error;
-    });
-
-  return mongoConnection;
+  return cachedConnection;
 }
 
-/* =====================================================
+/* =========================================================
    USER MODEL
-===================================================== */
+========================================================= */
 
-const userSchema =
-  new mongoose.Schema(
-    {
-      name: {
-        type: String,
-        required: true,
-        trim: true,
-      },
-
-      email: {
-        type: String,
-        required: true,
-        unique: true,
-        lowercase: true,
-        trim: true,
-      },
-
-      password: {
-        type: String,
-        required: true,
-      },
-
-      balance: {
-        type: Number,
-        default: 0,
-      },
-
-      deposited: {
-        type: Number,
-        default: 0,
-      },
-
-      withdrawn: {
-        type: Number,
-        default: 0,
-      },
+const userSchema = new mongoose.Schema(
+  {
+    name: {
+      type: String,
+      required: true,
+      trim: true,
     },
 
-    {
-      timestamps: true,
-    }
-  );
+    email: {
+      type: String,
+      required: true,
+      unique: true,
+      lowercase: true,
+      trim: true,
+    },
+
+    password: {
+      type: String,
+      required: true,
+    },
+
+    balance: {
+      type: Number,
+      default: 0,
+    },
+
+    deposited: {
+      type: Number,
+      default: 0,
+    },
+
+    withdrawn: {
+      type: Number,
+      default: 0,
+    },
+  },
+  {
+    timestamps: true,
+  }
+);
 
 const User =
   mongoose.models.User ||
-  mongoose.model(
-    "User",
-    userSchema
-  );
+  mongoose.model("User", userSchema);
 
-/* =====================================================
+/* =========================================================
    TRANSACTION MODEL
-===================================================== */
+========================================================= */
 
-const transactionSchema =
-  new mongoose.Schema(
-    {
-      userId: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: "User",
-        required: true,
-      },
-
-      transactionId: {
-        type: String,
-        required: true,
-        unique: true,
-      },
-
-      type: {
-        type: String,
-        enum: [
-          "deposit",
-          "withdrawal",
-        ],
-        required: true,
-      },
-
-      amount: {
-        type: Number,
-        required: true,
-      },
-
-      paymentMethod: {
-        type: String,
-        default: "Bank Transfer",
-      },
-
-      accountNumber: {
-        type: String,
-        default: "",
-      },
-
-      accountName: {
-        type: String,
-        default: "",
-      },
-
-      status: {
-        type: String,
-        enum: [
-          "pending",
-          "processing",
-          "completed",
-          "failed",
-        ],
-        default: "pending",
-      },
+const transactionSchema = new mongoose.Schema(
+  {
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
     },
 
-    {
-      timestamps: true,
-    }
-  );
+    transactionId: {
+      type: String,
+      required: true,
+      unique: true,
+    },
+
+    type: {
+      type: String,
+      enum: [
+        "deposit",
+        "withdrawal",
+        "transfer",
+        "payment",
+      ],
+      required: true,
+    },
+
+    amount: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+
+    paymentMethod: {
+      type: String,
+      default: "",
+    },
+
+    accountNumber: {
+      type: String,
+      default: "",
+    },
+
+    accountName: {
+      type: String,
+      default: "",
+    },
+
+    status: {
+      type: String,
+      enum: [
+        "pending",
+        "processing",
+        "completed",
+        "failed",
+      ],
+      default: "pending",
+    },
+  },
+  {
+    timestamps: true,
+  }
+);
 
 const Transaction =
   mongoose.models.Transaction ||
-  mongoose.model(
-    "Transaction",
-    transactionSchema
-  );
+  mongoose.model("Transaction", transactionSchema);
 
-/* =====================================================
+/* =========================================================
    WITHDRAWAL ACCOUNT MODEL
-===================================================== */
+========================================================= */
 
-const withdrawalAccountSchema =
-  new mongoose.Schema(
-    {
-      userId: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: "User",
-        required: true,
-      },
-
-      provider: {
-        type: String,
-        required: true,
-        trim: true,
-      },
-
-      accountName: {
-        type: String,
-        required: true,
-        trim: true,
-      },
-
-      accountNumber: {
-        type: String,
-        required: true,
-        trim: true,
-      },
-
-      isDefault: {
-        type: Boolean,
-        default: false,
-      },
+const withdrawalAccountSchema = new mongoose.Schema(
+  {
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
     },
 
-    {
-      timestamps: true,
-    }
-  );
+    bankName: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+
+    accountNumber: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+
+    accountName: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+  },
+  {
+    timestamps: true,
+  }
+);
 
 const WithdrawalAccount =
   mongoose.models.WithdrawalAccount ||
@@ -331,968 +241,602 @@ const WithdrawalAccount =
     withdrawalAccountSchema
   );
 
-/* =====================================================
-   GENERATE TRANSACTION ID
-===================================================== */
+/* =========================================================
+   HELPER FUNCTIONS
+========================================================= */
 
-function generateId() {
+function generateTransactionId() {
   return (
-    Date.now().toString(36) +
-    Math.random()
-      .toString(36)
-      .substring(2, 10)
+    "TXN-" +
+    Date.now() +
+    "-" +
+    Math.random().toString(36).substring(2, 8).toUpperCase()
   );
 }
 
-/* =====================================================
-   USER AUTHENTICATION
-===================================================== */
+/* =========================================================
+   NORMAL USER AUTHENTICATION
+========================================================= */
 
-async function authenticate(
-  req,
-  res,
-  next
-) {
+async function authenticate(req, res, next) {
   try {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader) {
+      return res.status(401).json({
+        message: "Authorization token is required.",
+      });
+    }
+
+    if (!authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({
+        message: "Invalid authorization format.",
+      });
+    }
+
+    const token = authHeader.split(" ")[1];
+
+    if (!token) {
+      return res.status(401).json({
+        message: "Authentication token is missing.",
+      });
+    }
+
     if (!JWT_SECRET) {
       return res.status(500).json({
-        success: false,
-        message:
-          "JWT_SECRET is not configured on the server.",
+        message: "JWT_SECRET is not configured.",
       });
     }
 
-    const authorization =
-      req.headers.authorization;
+    const decoded = jwt.verify(token, JWT_SECRET);
 
-    if (!authorization) {
-      return res.status(401).json({
-        success: false,
-        message:
-          "Authentication required.",
-      });
-    }
-
-    if (
-      !authorization.startsWith(
-        "Bearer "
-      )
-    ) {
-      return res.status(401).json({
-        success: false,
-        message:
-          "Invalid authorization format.",
-      });
-    }
-
-    const token =
-      authorization.substring(7);
-
-    const decoded =
-      jwt.verify(
-        token,
-        JWT_SECRET
-      );
-
-    /*
-     * Admin tokens must not be accepted
-     * by normal user routes.
-     */
-
-    if (
-      decoded.role === "admin"
-    ) {
+    if (decoded.role !== "user") {
       return res.status(403).json({
-        success: false,
-        message:
-          "Administrator token cannot access this route.",
+        message: "User access required.",
       });
     }
 
-    await connectDatabase();
-
-    const user =
-      await User.findById(
-        decoded.userId
-      ).select("-password");
-
-    if (!user) {
+    if (!decoded.userId) {
       return res.status(401).json({
-        success: false,
-        message:
-          "User not found.",
+        message: "Invalid user token.",
       });
     }
 
-    req.user = user;
+    req.userId = decoded.userId;
+    req.user = decoded;
 
     next();
   } catch (error) {
-    console.error(
-      "AUTH ERROR:",
-      error
-    );
+    console.error("User authentication error:", error);
 
     return res.status(401).json({
-      success: false,
-      message:
-        "Invalid or expired token.",
+      message: "Invalid or expired authentication token.",
     });
   }
 }
 
-/* =====================================================
+/* =========================================================
    ADMIN AUTHENTICATION
-===================================================== */
+========================================================= */
 
-async function authenticateAdmin(
-  req,
-  res,
-  next
-) {
+async function authenticateAdmin(req, res, next) {
   try {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader) {
+      return res.status(401).json({
+        message: "Admin authorization token is required.",
+      });
+    }
+
+    if (!authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({
+        message: "Invalid authorization format.",
+      });
+    }
+
+    const token = authHeader.split(" ")[1];
+
+    if (!token) {
+      return res.status(401).json({
+        message: "Admin token is missing.",
+      });
+    }
+
     if (!JWT_SECRET) {
       return res.status(500).json({
-        success: false,
-        message:
-          "JWT_SECRET is not configured on the server.",
+        message: "JWT_SECRET is not configured.",
       });
     }
 
-    const authorization =
-      req.headers.authorization;
+    if (!ADMIN_EMAIL) {
+      return res.status(500).json({
+        message: "ADMIN_EMAIL is not configured.",
+      });
+    }
 
-    if (!authorization) {
-      return res.status(401).json({
-        success: false,
-        message:
-          "Admin authentication required.",
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    const tokenAdminEmail = String(
+      decoded.adminEmail || ""
+    )
+      .trim()
+      .toLowerCase();
+
+    const configuredAdminEmail = String(
+      ADMIN_EMAIL || ""
+    )
+      .trim()
+      .toLowerCase();
+
+    if (decoded.role !== "admin") {
+      return res.status(403).json({
+        message: "Admin access required.",
       });
     }
 
     if (
-      !authorization.startsWith(
-        "Bearer "
-      )
-    ) {
-      return res.status(401).json({
-        success: false,
-        message:
-          "Invalid authorization format.",
-      });
-    }
-
-    const token =
-      authorization.substring(7);
-
-    const decoded =
-      jwt.verify(
-        token,
-        JWT_SECRET
-      );
-
-    if (
-      decoded.role !== "admin"
+      !tokenAdminEmail ||
+      tokenAdminEmail !== configuredAdminEmail
     ) {
       return res.status(403).json({
-        success: false,
-        message:
-          "Administrator access required.",
-      });
-    }
-
-    if (
-      decoded.adminEmail !==
-      ADMIN_EMAIL
-    ) {
-      return res.status(403).json({
-        success: false,
-        message:
-          "Invalid administrator account.",
+        message: "Invalid admin credentials.",
       });
     }
 
     req.admin = {
-      email:
-        decoded.adminEmail,
-      role:
-        decoded.role,
+      role: "admin",
+      adminEmail: configuredAdminEmail,
     };
 
     next();
   } catch (error) {
-    console.error(
-      "ADMIN AUTH ERROR:",
-      error
-    );
+    console.error("Admin authentication error:", error);
 
     return res.status(401).json({
-      success: false,
-      message:
-        "Invalid or expired admin token.",
+      message: "Invalid or expired admin token.",
     });
   }
 }
 
-/* =====================================================
+/* =========================================================
    ROOT
-===================================================== */
+========================================================= */
 
 app.get("/", async (req, res) => {
   try {
-    await connectDatabase();
+    await connectDB();
 
-    return res.json({
+    res.json({
       success: true,
-      message:
-        "Elonixx API is running 🚀",
-      status: "online",
-      database: "connected",
-      chat: "disabled",
+      message: "ElonixxWallet API is running.",
     });
   } catch (error) {
-    console.error(
-      "ROOT ERROR:",
-      error
-    );
+    console.error("Root database error:", error);
 
-    return res.status(500).json({
+    res.status(500).json({
       success: false,
-      message:
-        "Database connection failed.",
+      message: "API is running but database connection failed.",
     });
   }
 });
 
-/* =====================================================
-   TEST
-===================================================== */
+/* =========================================================
+   TEST ROUTE
+========================================================= */
 
-app.get(
-  "/api/test",
-  async (req, res) => {
-    try {
-      await connectDatabase();
+app.get("/api/test", async (req, res) => {
+  try {
+    await connectDB();
 
-      return res.json({
-        success: true,
-        message:
-          "Elonixx backend is connected successfully!",
-        database: "connected",
-      });
-    } catch (error) {
-      console.error(
-        "TEST ERROR:",
-        error
-      );
+    res.json({
+      success: true,
+      message: "Backend and MongoDB are connected.",
+    });
+  } catch (error) {
+    console.error("Test route error:", error);
 
-      return res.status(500).json({
-        success: false,
-        message:
-          "Backend cannot connect to MongoDB.",
-        error:
-          error.message,
-      });
-    }
+    res.status(500).json({
+      success: false,
+      message: "Database connection failed.",
+      error: error.message,
+    });
   }
-);
+});
 
-/* =====================================================
+/* =========================================================
    REGISTER
-===================================================== */
+========================================================= */
 
-app.post(
-  "/api/register",
-  async (req, res) => {
-    console.log(
-      "================================="
-    );
+app.post("/api/register", async (req, res) => {
+  try {
+    await connectDB();
 
-    console.log(
-      "REGISTRATION REQUEST RECEIVED"
-    );
+    const {
+      name,
+      email,
+      password,
+    } = req.body;
 
-    console.log(
-      "================================="
-    );
-
-    try {
-      if (!MONGODB_URI) {
-        console.error(
-          "MONGODB_URI is missing."
-        );
-
-        return res.status(500).json({
-          success: false,
-          message:
-            "Server database configuration is missing.",
-        });
-      }
-
-      if (!JWT_SECRET) {
-        console.error(
-          "JWT_SECRET is missing."
-        );
-
-        return res.status(500).json({
-          success: false,
-          message:
-            "Server authentication configuration is missing.",
-        });
-      }
-
-      await connectDatabase();
-
-      console.log(
-        "Database ready for registration."
-      );
-
-      const {
-        name,
-        email,
-        password,
-      } = req.body || {};
-
-      console.log(
-        "Registration email:",
-        email
-      );
-
-      if (
-        !name ||
-        !email ||
-        !password
-      ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Name, email and password are required.",
-        });
-      }
-
-      const cleanName =
-        String(name).trim();
-
-      const cleanEmail =
-        String(email)
-          .trim()
-          .toLowerCase();
-
-      const cleanPassword =
-        String(password);
-
-      if (cleanName.length < 2) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Name must contain at least 2 characters.",
-        });
-      }
-
-      if (cleanEmail.length < 5) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Please enter a valid email address.",
-        });
-      }
-
-      if (cleanPassword.length < 6) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Password must contain at least 6 characters.",
-        });
-      }
-
-      console.log(
-        "Checking whether email already exists..."
-      );
-
-      const existingUser =
-        await User.findOne({
-          email: cleanEmail,
-        });
-
-      if (existingUser) {
-        console.log(
-          "Registration rejected: email already exists."
-        );
-
-        return res.status(409).json({
-          success: false,
-          message:
-            "An account with this email already exists.",
-        });
-      }
-
-      console.log(
-        "Hashing password..."
-      );
-
-      const hashedPassword =
-        await bcrypt.hash(
-          cleanPassword,
-          12
-        );
-
-      console.log(
-        "Creating MongoDB user..."
-      );
-
-      const user =
-        new User({
-          name: cleanName,
-          email: cleanEmail,
-          password: hashedPassword,
-          balance: 0,
-          deposited: 0,
-          withdrawn: 0,
-        });
-
-      await user.save();
-
-      console.log(
-        "User created:",
-        user._id.toString()
-      );
-
-      console.log(
-        "Creating authentication token..."
-      );
-
-      const token =
-        jwt.sign(
-          {
-            userId:
-              user._id.toString(),
-            role:
-              "user",
-          },
-          JWT_SECRET,
-          {
-            expiresIn: "7d",
-          }
-        );
-
-      return res.status(201).json({
-        success: true,
-
+    if (!name || !email || !password) {
+      return res.status(400).json({
         message:
-          "Account created successfully.",
-
-        user: {
-          id:
-            user._id.toString(),
-
-          name:
-            user.name,
-
-          email:
-            user.email,
-
-          balance:
-            user.balance,
-
-          deposited:
-            user.deposited,
-
-          withdrawn:
-            user.withdrawn,
-        },
-
-        token,
-      });
-    } catch (error) {
-      console.error(
-        "================================="
-      );
-
-      console.error(
-        "REGISTRATION ERROR"
-      );
-
-      console.error(
-        "================================="
-      );
-
-      console.error(
-        "Name:",
-        error?.name
-      );
-
-      console.error(
-        "Message:",
-        error?.message
-      );
-
-      console.error(
-        "Code:",
-        error?.code
-      );
-
-      console.error(
-        "Full error:",
-        error
-      );
-
-      if (
-        error?.code === 11000
-      ) {
-        return res.status(409).json({
-          success: false,
-          message:
-            "An account with this email already exists.",
-        });
-      }
-
-      if (
-        error?.name ===
-        "ValidationError"
-      ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Invalid account information.",
-          details:
-            Object.values(
-              error.errors || {}
-            )
-              .map(
-                (item) =>
-                  item.message
-              )
-              .join(", "),
-        });
-      }
-
-      if (
-        error?.name ===
-        "JsonWebTokenError"
-      ) {
-        return res.status(500).json({
-          success: false,
-          message:
-            "Unable to create authentication token.",
-        });
-      }
-
-      if (
-        error?.name ===
-          "MongoServerError" ||
-        error?.name ===
-          "MongooseServerSelectionError"
-      ) {
-        return res.status(500).json({
-          success: false,
-          message:
-            "Database error while creating the account.",
-          details:
-            error.message,
-        });
-      }
-
-      return res.status(500).json({
-        success: false,
-
-        message:
-          "Unable to create account.",
-
-        details:
-          error?.message ||
-          "Unknown server error.",
+          "Name, email and password are required.",
       });
     }
-  }
-);
 
-/* =====================================================
-   LOGIN
-===================================================== */
+    const cleanName = String(name).trim();
 
-app.post(
-  "/api/login",
-  async (req, res) => {
-    try {
-      if (!JWT_SECRET) {
-        return res.status(500).json({
-          success: false,
-          message:
-            "JWT_SECRET is not configured.",
-        });
-      }
+    const cleanEmail = String(email)
+      .trim()
+      .toLowerCase();
 
-      const {
-        email,
-        password,
-      } = req.body || {};
+    const cleanPassword = String(password);
 
-      if (
-        !email ||
-        !password
-      ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Email and password are required.",
-        });
-      }
+    if (cleanName.length < 2) {
+      return res.status(400).json({
+        message: "Name must be at least 2 characters.",
+      });
+    }
 
-      const normalizedEmail =
-        String(email)
-          .trim()
-          .toLowerCase();
+    if (cleanPassword.length < 6) {
+      return res.status(400).json({
+        message:
+          "Password must be at least 6 characters.",
+      });
+    }
 
-      /* =================================================
-         ADMIN LOGIN
-      ================================================= */
+    const existingUser = await User.findOne({
+      email: cleanEmail,
+    });
 
-      if (
-        ADMIN_EMAIL &&
-        ADMIN_PASSWORD &&
-        normalizedEmail ===
-          ADMIN_EMAIL
-            .trim()
-            .toLowerCase() &&
-        String(password) ===
-          String(ADMIN_PASSWORD)
-      ) {
-        const adminToken =
-          jwt.sign(
-            {
-              role:
-                "admin",
+    if (existingUser) {
+      return res.status(409).json({
+        message: "An account with this email already exists.",
+      });
+    }
 
-              adminEmail:
-                ADMIN_EMAIL
-                  .trim()
-                  .toLowerCase(),
-            },
-            JWT_SECRET,
-            {
-              expiresIn: "7d",
-            }
-          );
+    const hashedPassword = await bcrypt.hash(
+      cleanPassword,
+      12
+    );
 
-        return res.json({
-          success: true,
+    const user = await User.create({
+      name: cleanName,
+      email: cleanEmail,
+      password: hashedPassword,
+      balance: 0,
+      deposited: 0,
+      withdrawn: 0,
+    });
 
-          role: "admin",
+    if (!JWT_SECRET) {
+      return res.status(500).json({
+        message: "JWT_SECRET is not configured.",
+      });
+    }
 
-          message:
-            "Admin login successful.",
-
-          email:
-            ADMIN_EMAIL
-              .trim()
-              .toLowerCase(),
-
-          token:
-            adminToken,
-        });
-      }
-
-      /* =================================================
-         NORMAL USER LOGIN
-      ================================================= */
-
-      await connectDatabase();
-
-      const user =
-        await User.findOne({
-          email:
-            normalizedEmail,
-        });
-
-      if (!user) {
-        return res.status(401).json({
-          success: false,
-          message:
-            "Invalid email or password.",
-        });
-      }
-
-      const passwordMatches =
-        await bcrypt.compare(
-          String(password),
-          user.password
-        );
-
-      if (!passwordMatches) {
-        return res.status(401).json({
-          success: false,
-          message:
-            "Invalid email or password.",
-        });
-      }
-
-      const token =
-        jwt.sign(
-          {
-            userId:
-              user._id.toString(),
-
-            role:
-              "user",
-          },
-          JWT_SECRET,
-          {
-            expiresIn: "7d",
-          }
-        );
-
-      return res.json({
-        success: true,
-
+    const token = jwt.sign(
+      {
+        userId: user._id.toString(),
         role: "user",
+      },
+      JWT_SECRET,
+      {
+        expiresIn: "7d",
+      }
+    );
 
-        message:
-          "Login successful.",
+    return res.status(201).json({
+      message: "Registration successful.",
+      role: "user",
+      token,
 
-        user: {
-          id:
-            user._id.toString(),
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        balance: user.balance,
+        deposited: user.deposited,
+        withdrawn: user.withdrawn,
+      },
+    });
+  } catch (error) {
+    console.error("Registration error:", error);
 
-          name:
-            user.name,
+    return res.status(500).json({
+      message: "Registration failed.",
+      error: error.message,
+    });
+  }
+});
 
-          email:
-            user.email,
+/* =========================================================
+   LOGIN
+========================================================= */
 
-          balance:
-            user.balance,
+app.post("/api/login", async (req, res) => {
+  try {
+    await connectDB();
 
-          deposited:
-            user.deposited,
+    const {
+      email,
+      password,
+    } = req.body;
 
-          withdrawn:
-            user.withdrawn,
-        },
-
-        token,
-      });
-    } catch (error) {
-      console.error(
-        "LOGIN ERROR:",
-        error
-      );
-
-      return res.status(500).json({
-        success: false,
-        message:
-          "Unable to login.",
-        details:
-          error?.message,
+    if (!email || !password) {
+      return res.status(400).json({
+        message: "Email and password are required.",
       });
     }
-  }
-);
 
-/* =====================================================
-   DASHBOARD
-===================================================== */
+    const cleanEmail = String(email)
+      .trim()
+      .toLowerCase();
+
+    const cleanPassword = String(password);
+
+    /* -----------------------------------------------------
+       ADMIN LOGIN
+    ----------------------------------------------------- */
+
+    if (
+      ADMIN_EMAIL &&
+      ADMIN_PASSWORD &&
+      cleanEmail === ADMIN_EMAIL &&
+      cleanPassword === ADMIN_PASSWORD
+    ) {
+      if (!JWT_SECRET) {
+        return res.status(500).json({
+          message: "JWT_SECRET is not configured.",
+        });
+      }
+
+      const token = jwt.sign(
+        {
+          role: "admin",
+          adminEmail: ADMIN_EMAIL,
+        },
+        JWT_SECRET,
+        {
+          expiresIn: "7d",
+        }
+      );
+
+      return res.status(200).json({
+        message: "Admin login successful!",
+        role: "admin",
+        email: ADMIN_EMAIL,
+        token,
+      });
+    }
+
+    /* -----------------------------------------------------
+       NORMAL USER LOGIN
+    ----------------------------------------------------- */
+
+    const user = await User.findOne({
+      email: cleanEmail,
+    });
+
+    if (!user) {
+      return res.status(401).json({
+        message: "Invalid email or password.",
+      });
+    }
+
+    const passwordMatches =
+      await bcrypt.compare(
+        cleanPassword,
+        user.password
+      );
+
+    if (!passwordMatches) {
+      return res.status(401).json({
+        message: "Invalid email or password.",
+      });
+    }
+
+    if (!JWT_SECRET) {
+      return res.status(500).json({
+        message: "JWT_SECRET is not configured.",
+      });
+    }
+
+    const token = jwt.sign(
+      {
+        userId: user._id.toString(),
+        role: "user",
+      },
+      JWT_SECRET,
+      {
+        expiresIn: "7d",
+      }
+    );
+
+    return res.status(200).json({
+      message: "Login successful.",
+      role: "user",
+      token,
+
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        balance: user.balance,
+        deposited: user.deposited,
+        withdrawn: user.withdrawn,
+      },
+    });
+  } catch (error) {
+    console.error("Login error:", error);
+
+    return res.status(500).json({
+      message: "Login failed.",
+      error: error.message,
+    });
+  }
+});
+
+/* =========================================================
+   USER DASHBOARD
+========================================================= */
 
 app.get(
   "/api/dashboard",
   authenticate,
   async (req, res) => {
     try {
-      await connectDatabase();
+      await connectDB();
 
-      const transactions =
-        await Transaction.find({
-          userId:
-            req.user._id,
-        })
-          .sort({
-            createdAt: -1,
-          })
-          .limit(20);
+      const user = await User.findById(
+        req.userId
+      ).select("-password");
 
-      const withdrawalAccounts =
-        await WithdrawalAccount.find({
-          userId:
-            req.user._id,
-        }).sort({
-          isDefault: -1,
-          createdAt: -1,
+      if (!user) {
+        return res.status(404).json({
+          message: "User not found.",
         });
+      }
 
-      return res.json({
+      res.json({
         success: true,
 
         user: {
-          id:
-            req.user._id.toString(),
-
-          name:
-            req.user.name,
-
-          email:
-            req.user.email,
-
-          balance:
-            req.user.balance,
-
-          deposited:
-            req.user.deposited,
-
-          withdrawn:
-            req.user.withdrawn,
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          balance: user.balance,
+          deposited: user.deposited,
+          withdrawn: user.withdrawn,
+          createdAt: user.createdAt,
         },
-
-        transactions,
-
-        withdrawalAccounts,
       });
     } catch (error) {
       console.error(
-        "DASHBOARD ERROR:",
+        "Dashboard error:",
         error
       );
 
-      return res.status(500).json({
-        success: false,
-        message:
-          "Unable to load dashboard.",
+      res.status(500).json({
+        message: "Failed to load dashboard.",
       });
     }
   }
 );
 
-/* =====================================================
-   TRANSACTIONS
-===================================================== */
+/* =========================================================
+   USER TRANSACTIONS
+========================================================= */
 
 app.get(
   "/api/transactions",
   authenticate,
   async (req, res) => {
     try {
-      await connectDatabase();
+      await connectDB();
 
       const transactions =
         await Transaction.find({
-          userId:
-            req.user._id,
+          userId: req.userId,
         }).sort({
           createdAt: -1,
         });
 
-      return res.json({
+      res.json({
         success: true,
         transactions,
       });
     } catch (error) {
       console.error(
-        "TRANSACTIONS ERROR:",
+        "Transactions error:",
         error
       );
 
-      return res.status(500).json({
-        success: false,
-        message:
-          "Unable to load transactions.",
+      res.status(500).json({
+        message: "Failed to load transactions.",
       });
     }
   }
 );
 
-/* =====================================================
-   WITHDRAWAL ACCOUNTS
-===================================================== */
+/* =========================================================
+   GET WITHDRAWAL ACCOUNTS
+========================================================= */
 
 app.get(
   "/api/withdrawal-accounts",
   authenticate,
   async (req, res) => {
     try {
-      await connectDatabase();
+      await connectDB();
 
       const accounts =
         await WithdrawalAccount.find({
-          userId:
-            req.user._id,
+          userId: req.userId,
         }).sort({
-          isDefault: -1,
           createdAt: -1,
         });
 
-      return res.json({
+      res.json({
         success: true,
         accounts,
       });
     } catch (error) {
       console.error(
-        "ACCOUNTS ERROR:",
+        "Withdrawal accounts error:",
         error
       );
 
-      return res.status(500).json({
-        success: false,
+      res.status(500).json({
         message:
-          "Unable to load withdrawal accounts.",
+          "Failed to load withdrawal accounts.",
       });
     }
   }
 );
 
-/* =====================================================
+/* =========================================================
    ADD WITHDRAWAL ACCOUNT
-===================================================== */
+========================================================= */
 
 app.post(
   "/api/withdrawal-accounts",
   authenticate,
   async (req, res) => {
     try {
-      await connectDatabase();
+      await connectDB();
 
       const {
-        provider,
-        accountName,
+        bankName,
         accountNumber,
-      } = req.body || {};
+        accountName,
+      } = req.body;
 
       if (
-        !provider ||
-        !accountName ||
-        !accountNumber
+        !bankName ||
+        !accountNumber ||
+        !accountName
       ) {
         return res.status(400).json({
-          success: false,
           message:
-            "Provider, account name and account number are required.",
+            "Bank name, account number and account name are required.",
         });
       }
 
-      const accountCount =
-        await WithdrawalAccount.countDocuments(
-          {
-            userId:
-              req.user._id,
-          }
-        );
-
       const account =
         await WithdrawalAccount.create({
-          userId:
-            req.user._id,
-
-          provider:
-            String(provider).trim(),
-
-          accountName:
-            String(accountName).trim(),
-
-          accountNumber:
-            String(accountNumber).trim(),
-
-          isDefault:
-            accountCount === 0,
+          userId: req.userId,
+          bankName: String(bankName).trim(),
+          accountNumber: String(
+            accountNumber
+          ).trim(),
+          accountName: String(
+            accountName
+          ).trim(),
         });
 
-      return res.status(201).json({
+      res.status(201).json({
         success: true,
         message:
           "Withdrawal account added successfully.",
@@ -1300,50 +844,46 @@ app.post(
       });
     } catch (error) {
       console.error(
-        "ADD ACCOUNT ERROR:",
+        "Add withdrawal account error:",
         error
       );
 
-      return res.status(500).json({
-        success: false,
+      res.status(500).json({
         message:
-          "Unable to add withdrawal account.",
+          "Failed to add withdrawal account.",
       });
     }
   }
 );
 
-/* =====================================================
-   WITHDRAWAL
-===================================================== */
+/* =========================================================
+   CREATE WITHDRAWAL
+========================================================= */
 
 app.post(
   "/api/withdrawals",
   authenticate,
   async (req, res) => {
     try {
-      await connectDatabase();
+      await connectDB();
 
       const {
         amount,
+        paymentMethod,
         accountNumber,
         accountName,
-        paymentMethod,
-      } = req.body || {};
+      } = req.body;
 
       const numericAmount =
         Number(amount);
 
       if (
-        !Number.isFinite(
-          numericAmount
-        ) ||
+        !Number.isFinite(numericAmount) ||
         numericAmount <= 0
       ) {
         return res.status(400).json({
-          success: false,
           message:
-            "Enter a valid withdrawal amount.",
+            "Please enter a valid withdrawal amount.",
         });
       }
 
@@ -1352,88 +892,85 @@ app.post(
         !accountName
       ) {
         return res.status(400).json({
-          success: false,
           message:
             "Account number and account name are required.",
         });
       }
 
+      const user = await User.findById(
+        req.userId
+      );
+
+      if (!user) {
+        return res.status(404).json({
+          message: "User not found.",
+        });
+      }
+
       if (
-        numericAmount >
-        req.user.balance
+        numericAmount > user.balance
       ) {
         return res.status(400).json({
-          success: false,
           message:
-            "Insufficient available balance.",
+            "Insufficient balance.",
         });
       }
 
       const transaction =
         await Transaction.create({
-          userId:
-            req.user._id,
+          userId: user._id,
 
           transactionId:
-            generateId(),
+            generateTransactionId(),
 
-          type:
-            "withdrawal",
+          type: "withdrawal",
 
-          amount:
-            numericAmount,
+          amount: numericAmount,
 
           paymentMethod:
-            paymentMethod ||
-            "Bank Transfer",
+            paymentMethod || "Bank Transfer",
 
-          accountNumber:
-            String(
-              accountNumber
-            ).trim(),
+          accountNumber: String(
+            accountNumber
+          ).trim(),
 
-          accountName:
-            String(
-              accountName
-            ).trim(),
+          accountName: String(
+            accountName
+          ).trim(),
 
-          status:
-            "pending",
+          status: "pending",
         });
 
-      return res.status(201).json({
+      res.status(201).json({
         success: true,
-
         message:
-          "Withdrawal request submitted successfully. Your request is pending review.",
-
+          "Withdrawal request submitted successfully.",
         transaction,
       });
     } catch (error) {
       console.error(
-        "WITHDRAWAL ERROR:",
+        "Withdrawal error:",
         error
       );
 
-      return res.status(500).json({
-        success: false,
+      res.status(500).json({
         message:
-          "Unable to create withdrawal request.",
+          "Failed to submit withdrawal.",
       });
     }
   }
 );
 
-/* =====================================================
+/* =========================================================
    ADMIN OVERVIEW
-===================================================== */
+========================================================= */
 
 app.get(
   "/api/admin/overview",
   authenticateAdmin,
   async (req, res) => {
     try {
-      await connectDatabase();
+      await connectDB();
 
       const [
         totalUsers,
@@ -1441,6 +978,8 @@ app.get(
         totalWithdrawals,
         pendingWithdrawals,
         completedWithdrawals,
+        processingWithdrawals,
+        failedWithdrawals,
         users,
       ] = await Promise.all([
         User.countDocuments(),
@@ -1461,6 +1000,16 @@ app.get(
           status: "completed",
         }),
 
+        Transaction.countDocuments({
+          type: "withdrawal",
+          status: "processing",
+        }),
+
+        Transaction.countDocuments({
+          type: "withdrawal",
+          status: "failed",
+        }),
+
         User.find()
           .select("-password")
           .sort({
@@ -1468,53 +1017,51 @@ app.get(
           }),
       ]);
 
-      return res.json({
+      return res.status(200).json({
         success: true,
 
         statistics: {
           totalUsers,
-
           totalTransactions,
-
           totalWithdrawals,
-
           pendingWithdrawals,
-
           completedWithdrawals,
+          processingWithdrawals,
+          failedWithdrawals,
         },
 
         users,
       });
     } catch (error) {
       console.error(
-        "ADMIN OVERVIEW ERROR:",
+        "Admin overview error:",
         error
       );
 
       return res.status(500).json({
         success: false,
         message:
-          "Unable to load admin overview.",
+          "Failed to load admin overview.",
+        error: error.message,
       });
     }
   }
 );
 
-/* =====================================================
+/* =========================================================
    ADMIN WITHDRAWALS
-===================================================== */
+========================================================= */
 
 app.get(
   "/api/admin/withdrawals",
   authenticateAdmin,
   async (req, res) => {
     try {
-      await connectDatabase();
+      await connectDB();
 
       const withdrawals =
         await Transaction.find({
-          type:
-            "withdrawal",
+          type: "withdrawal",
         })
           .populate(
             "userId",
@@ -1524,44 +1071,40 @@ app.get(
             createdAt: -1,
           });
 
-      return res.json({
+      return res.status(200).json({
         success: true,
-
         withdrawals,
       });
     } catch (error) {
       console.error(
-        "ADMIN WITHDRAWALS ERROR:",
+        "Admin withdrawals error:",
         error
       );
 
       return res.status(500).json({
         success: false,
         message:
-          "Unable to load withdrawals.",
+          "Failed to load withdrawals.",
+        error: error.message,
       });
     }
   }
 );
 
-/* =====================================================
+/* =========================================================
    ADMIN UPDATE WITHDRAWAL STATUS
-===================================================== */
+========================================================= */
 
 app.patch(
   "/api/admin/withdrawals/:id/status",
   authenticateAdmin,
   async (req, res) => {
     try {
-      await connectDatabase();
-
-      const {
-        id,
-      } = req.params;
+      await connectDB();
 
       const {
         status,
-      } = req.body || {};
+      } = req.body;
 
       const allowedStatuses = [
         "pending",
@@ -1571,12 +1114,9 @@ app.patch(
       ];
 
       if (
-        !allowedStatuses.includes(
-          status
-        )
+        !allowedStatuses.includes(status)
       ) {
         return res.status(400).json({
-          success: false,
           message:
             "Invalid withdrawal status.",
         });
@@ -1584,101 +1124,88 @@ app.patch(
 
       const withdrawal =
         await Transaction.findOne({
-          _id: id,
-          type:
-            "withdrawal",
+          _id: req.params.id,
+          type: "withdrawal",
         });
 
       if (!withdrawal) {
         return res.status(404).json({
-          success: false,
           message:
-            "Withdrawal request not found.",
+            "Withdrawal transaction not found.",
         });
       }
 
-      withdrawal.status =
-        status;
+      withdrawal.status = status;
 
       await withdrawal.save();
 
-      const updatedWithdrawal =
-        await Transaction.findById(
-          withdrawal._id
-        ).populate(
-          "userId",
-          "-password"
-        );
-
-      return res.json({
+      return res.status(200).json({
         success: true,
-
         message:
           "Withdrawal status updated successfully.",
-
-        withdrawal:
-          updatedWithdrawal,
+        withdrawal,
       });
     } catch (error) {
       console.error(
-        "ADMIN UPDATE WITHDRAWAL ERROR:",
+        "Update withdrawal status error:",
         error
       );
-
-      if (
-        error?.name ===
-        "CastError"
-      ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Invalid withdrawal ID.",
-        });
-      }
 
       return res.status(500).json({
         success: false,
         message:
-          "Unable to update withdrawal status.",
+          "Failed to update withdrawal status.",
+        error: error.message,
       });
     }
   }
 );
 
-/* =====================================================
-   API 404
-===================================================== */
+/* =========================================================
+   ADMIN CHECK
+========================================================= */
 
-app.use(
-  "/api",
-  (req, res) => {
-    return res.status(404).json({
-      success: false,
-      message:
-        "API endpoint not found.",
-      path:
-        req.path,
+app.get(
+  "/api/admin/me",
+  authenticateAdmin,
+  async (req, res) => {
+    return res.status(200).json({
+      success: true,
+      role: "admin",
+      email: req.admin.adminEmail,
     });
   }
 );
 
-/* =====================================================
-   GENERAL 404
-===================================================== */
-app.use(
-  (req, res) => {
-    return res.status(404).json({
-      success: false,
-      message:
-        "Endpoint not found.",
-      path:
-        req.path,
-    });
-  }
-);
+/* =========================================================
+   404 HANDLER
+========================================================= */
 
-/* =====================================================
-   VERCEL
-===================================================== */
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: `Route ${req.method} ${req.originalUrl} not found.`,
+  });
+});
+
+/* =========================================================
+   GLOBAL ERROR HANDLER
+========================================================= */
+
+app.use((error, req, res, next) => {
+  console.error(
+    "Global server error:",
+    error
+  );
+
+  res.status(500).json({
+    success: false,
+    message: "Internal server error.",
+  });
+});
+
+/* =========================================================
+   VERCEL EXPORT
+========================================================= */
 
 export default app;
