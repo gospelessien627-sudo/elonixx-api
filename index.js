@@ -5,7 +5,6 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import cors from "cors";
 import dotenv from "dotenv";
-import crypto from "node:crypto";
 
 dotenv.config();
 
@@ -13,42 +12,33 @@ dns.setServers(["1.1.1.1", "8.8.8.8"]);
 
 const app = express();
 
-app.use(
-  cors({
-    origin: process.env.FRONTEND_URL
-      ? process.env.FRONTEND_URL.split(",").map((url) => url.trim())
-      : true,
-    credentials: true,
-  })
-);
-
-app.use(express.json({ limit: "1mb" }));
-
-// --------------------------------------------------
-// ENVIRONMENT CONFIGURATION
-// --------------------------------------------------
-
-const PORT = process.env.PORT || 5000;
 const MONGODB_URI = process.env.MONGODB_URI;
 const JWT_SECRET = process.env.JWT_SECRET;
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL?.toLowerCase().trim();
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || "").trim().toLowerCase();
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
 
-const JWT_EXPIRES_IN = "7d";
+if (!MONGODB_URI) console.warn("WARNING: MONGODB_URI is not configured.");
+if (!JWT_SECRET) console.warn("WARNING: JWT_SECRET is not configured.");
 
-if (!JWT_SECRET) {
-  console.error("Missing JWT_SECRET environment variable.");
+if (!ADMIN_EMAIL || !ADMIN_PASSWORD) {
+  console.warn("WARNING: ADMIN_EMAIL or ADMIN_PASSWORD is not configured.");
 }
 
-if (!MONGODB_URI) {
-  console.error("Missing MONGODB_URI environment variable.");
-}
+/* ================= MIDDLEWARE ================= */
 
-// --------------------------------------------------
-// DATABASE CONNECTION
-// --------------------------------------------------
+app.use(cors({
+  origin: true,
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+}));
 
-let databaseConnectionPromise;
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+/* ================= DATABASE ================= */
+
+let connectionPromise;
 
 async function connectDB() {
   if (mongoose.connection.readyState === 1) {
@@ -56,762 +46,573 @@ async function connectDB() {
   }
 
   if (!MONGODB_URI) {
-    throw new Error("MONGODB_URI is not configured.");
+    throw new Error("MONGODB_URI is missing.");
   }
 
-  if (!databaseConnectionPromise) {
-    databaseConnectionPromise = mongoose
-      .connect(MONGODB_URI, {
-        serverSelectionTimeoutMS: 15000,
-      })
-      .then(() => {
-        console.log("MongoDB connected successfully.");
-        return mongoose.connection;
-      })
-      .catch((error) => {
-        databaseConnectionPromise = null;
-        throw error;
-      });
-  }
-
-  return databaseConnectionPromise;
-}
-
-// --------------------------------------------------
-// HELPERS
-// --------------------------------------------------
-
-function normalizeEmail(email) {
-  return typeof email === "string"
-    ? email.trim().toLowerCase()
-    : "";
-}
-
-function validEmail(email) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-}
-
-function parsePositiveAmount(value) {
-  const amount = Number(value);
-
-  if (!Number.isFinite(amount) || amount <= 0) {
-    return null;
-  }
-
-  // Money is stored to two decimal places.
-  const rounded = Math.round((amount + Number.EPSILON) * 100) / 100;
-
-  if (rounded <= 0 || rounded > 1_000_000_000_000) {
-    return null;
-  }
-
-  return rounded;
-}
-
-function createToken(payload) {
-  if (!JWT_SECRET) {
-    throw new Error("JWT_SECRET is not configured.");
-  }
-
-  return jwt.sign(payload, JWT_SECRET, {
-    expiresIn: JWT_EXPIRES_IN,
-  });
-}
-
-function asyncHandler(handler) {
-  return (req, res, next) => {
-    Promise.resolve(handler(req, res, next)).catch(next);
-  };
-}
-
-function publicUser(user) {
-  return {
-    id: user._id,
-    _id: user._id,
-    name: user.name,
-    email: user.email,
-    role: user.role,
-    balance: user.balance,
-    totalDeposits: user.totalDeposits,
-    totalWithdrawals: user.totalWithdrawals,
-    createdAt: user.createdAt,
-  };
-}
-
-// --------------------------------------------------
-// USER MODEL
-// --------------------------------------------------
-
-const userSchema = new mongoose.Schema(
-  {
-    name: {
-      type: String,
-      required: true,
-      trim: true,
-      maxlength: 100,
-    },
-
-    email: {
-      type: String,
-      required: true,
-      unique: true,
-      lowercase: true,
-      trim: true,
-      index: true,
-    },
-
-    password: {
-      type: String,
-      required: true,
-      select: false,
-    },
-
-    role: {
-      type: String,
-      enum: ["user", "admin"],
-      default: "user",
-    },
-
-    balance: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-
-    totalDeposits: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-
-    totalWithdrawals: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-  },
-  {
-    timestamps: true,
-  }
-);
-
-const User =
-  mongoose.models.User ||
-  mongoose.model("User", userSchema);
-
-// --------------------------------------------------
-// TRANSACTION MODEL
-// --------------------------------------------------
-
-const transactionSchema = new mongoose.Schema(
-  {
-    user: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
-      required: true,
-      index: true,
-    },
-
-    type: {
-      type: String,
-      enum: ["deposit", "withdrawal", "adjustment"],
-      required: true,
-    },
-
-    amount: {
-      type: Number,
-      required: true,
-      min: 0.01,
-    },
-
-    status: {
-      type: String,
-      enum: ["pending", "completed", "approved", "rejected", "failed"],
-      default: "completed",
-    },
-
-    description: {
-      type: String,
-      default: "",
-      maxlength: 500,
-    },
-
-    reference: {
-      type: String,
-      unique: true,
-      sparse: true,
-    },
-
-    metadata: {
-      type: mongoose.Schema.Types.Mixed,
-      default: {},
-    },
-  },
-  {
-    timestamps: true,
-  }
-);
-
-const Transaction =
-  mongoose.models.Transaction ||
-  mongoose.model("Transaction", transactionSchema);
-
-// --------------------------------------------------
-// WITHDRAWAL ACCOUNT MODEL
-// --------------------------------------------------
-
-const withdrawalAccountSchema = new mongoose.Schema(
-  {
-    user: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
-      required: true,
-      index: true,
-    },
-
-    accountName: {
-      type: String,
-      required: true,
-      trim: true,
-      maxlength: 100,
-    },
-
-    accountNumber: {
-      type: String,
-      required: true,
-      trim: true,
-      maxlength: 50,
-    },
-
-    bankName: {
-      type: String,
-      required: true,
-      trim: true,
-      maxlength: 100,
-    },
-
-    bankCode: {
-      type: String,
-      default: "",
-      trim: true,
-      maxlength: 30,
-    },
-  },
-  {
-    timestamps: true,
-  }
-);
-
-const WithdrawalAccount =
-  mongoose.models.WithdrawalAccount ||
-  mongoose.model("WithdrawalAccount", withdrawalAccountSchema);
-
-// --------------------------------------------------
-// WITHDRAWAL MODEL
-// --------------------------------------------------
-
-const withdrawalSchema = new mongoose.Schema(
-  {
-    user: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
-      required: true,
-      index: true,
-    },
-
-    account: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "WithdrawalAccount",
-      required: true,
-    },
-
-    amount: {
-      type: Number,
-      required: true,
-      min: 0.01,
-    },
-
-    status: {
-      type: String,
-      enum: ["pending", "approved", "rejected"],
-      default: "pending",
-      index: true,
-    },
-
-    reference: {
-      type: String,
-      required: true,
-      unique: true,
-    },
-
-    adminNote: {
-      type: String,
-      default: "",
-      maxlength: 500,
-    },
-
-    processedAt: {
-      type: Date,
-      default: null,
-    },
-
-    processedBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
-      default: null,
-    },
-  },
-  {
-    timestamps: true,
-  }
-);
-
-const Withdrawal =
-  mongoose.models.Withdrawal ||
-  mongoose.model("Withdrawal", withdrawalSchema);
-
-// --------------------------------------------------
-// AUTHENTICATION MIDDLEWARE
-// --------------------------------------------------
-
-function authenticate(req, res, next) {
-  const authorization = req.headers.authorization;
-
-  if (!authorization || !authorization.startsWith("Bearer ")) {
-    return res.status(401).json({
-      success: false,
-      message: "Authentication required.",
+  if (!connectionPromise) {
+    connectionPromise = mongoose.connect(MONGODB_URI, {
+      serverSelectionTimeoutMS: 10000,
+    }).catch((error) => {
+      connectionPromise = null;
+      throw error;
     });
   }
 
-  const token = authorization.slice(7).trim();
+  return connectionPromise;
+}
 
+/* ================= USER MODEL ================= */
+
+const userSchema = new mongoose.Schema({
+  name: {
+    type: String,
+    required: true,
+    trim: true,
+  },
+  email: {
+    type: String,
+    required: true,
+    unique: true,
+    lowercase: true,
+    trim: true,
+  },
+  password: {
+    type: String,
+    required: true,
+  },
+  balance: {
+    type: Number,
+    default: 0,
+  },
+  deposited: {
+    type: Number,
+    default: 0,
+  },
+  withdrawn: {
+    type: Number,
+    default: 0,
+  },
+}, {
+  timestamps: true,
+});
+
+const User = mongoose.models.User ||
+  mongoose.model("User", userSchema);
+
+/* ================= TRANSACTION MODEL ================= */
+
+const transactionSchema = new mongoose.Schema({
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    required: true,
+  },
+  transactionId: {
+    type: String,
+    required: true,
+    unique: true,
+  },
+  type: {
+    type: String,
+    enum: ["deposit", "withdrawal", "transfer", "payment"],
+    required: true,
+  },
+  amount: {
+    type: Number,
+    required: true,
+    min: 0,
+  },
+  paymentMethod: {
+    type: String,
+    default: "",
+  },
+  accountNumber: {
+    type: String,
+    default: "",
+  },
+  accountName: {
+    type: String,
+    default: "",
+  },
+  status: {
+    type: String,
+    enum: ["pending", "processing", "completed", "failed"],
+    default: "pending",
+  },
+}, {
+  timestamps: true,
+});
+
+const Transaction = mongoose.models.Transaction ||
+  mongoose.model("Transaction", transactionSchema);
+
+/* ================= WITHDRAWAL ACCOUNT MODEL ================= */
+
+const withdrawalAccountSchema = new mongoose.Schema({
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    required: true,
+  },
+  bankName: {
+    type: String,
+    required: true,
+    trim: true,
+  },
+  accountNumber: {
+    type: String,
+    required: true,
+    trim: true,
+  },
+  accountName: {
+    type: String,
+    required: true,
+    trim: true,
+  },
+}, {
+  timestamps: true,
+});
+
+const WithdrawalAccount = mongoose.models.WithdrawalAccount ||
+  mongoose.model("WithdrawalAccount", withdrawalAccountSchema);
+
+/* ================= HELPERS ================= */
+
+function generateTransactionId() {
+  return "TXN-" + Date.now() + "-" +
+    Math.random().toString(36).substring(2, 8).toUpperCase();
+}
+
+function requireJWTSecret(res) {
+  if (!JWT_SECRET) {
+    res.status(500).json({
+      success: false,
+      message: "JWT_SECRET is not configured.",
+    });
+
+    return false;
+  }
+
+  return true;
+}
+
+/* ================= USER AUTHENTICATION ================= */
+
+async function authenticate(req, res, next) {
   try {
-    if (!JWT_SECRET) {
-      throw new Error("JWT_SECRET is not configured.");
-    }
+    const authHeader = req.headers.authorization;
 
-    const decoded = jwt.verify(token, JWT_SECRET);
-
-    if (!decoded.id || !decoded.role) {
+    if (!authHeader?.startsWith("Bearer ")) {
       return res.status(401).json({
-        success: false,
-        message: "Invalid authentication token.",
+        message: "A valid authorization token is required.",
       });
     }
 
-    req.auth = {
-      id: decoded.id,
-      role: decoded.role,
+    if (!requireJWTSecret(res)) return;
+
+    const token = authHeader.slice(7);
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    if (decoded.role !== "user" || !decoded.userId) {
+      return res.status(403).json({
+        message: "User access required.",
+      });
+    }
+
+    req.userId = decoded.userId;
+    req.user = decoded;
+
+    next();
+  } catch (error) {
+    console.error("User authentication error:", error.message);
+
+    return res.status(401).json({
+      message: "Invalid or expired authentication token.",
+    });
+  }
+}
+
+/* ================= ADMIN AUTHENTICATION ================= */
+
+async function authenticateAdmin(req, res, next) {
+  try {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader?.startsWith("Bearer ")) {
+      return res.status(401).json({
+        message: "Admin authorization token is required.",
+      });
+    }
+
+    if (!requireJWTSecret(res)) return;
+
+    if (!ADMIN_EMAIL) {
+      return res.status(500).json({
+        message: "ADMIN_EMAIL is not configured.",
+      });
+    }
+
+    const token = authHeader.slice(7);
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    const tokenEmail = String(decoded.adminEmail || "")
+      .trim()
+      .toLowerCase();
+
+    if (
+      decoded.role !== "admin" ||
+      tokenEmail !== ADMIN_EMAIL
+    ) {
+      return res.status(403).json({
+        message: "Admin access required.",
+      });
+    }
+
+    req.admin = {
+      role: "admin",
+      adminEmail: ADMIN_EMAIL,
     };
 
     next();
-  } catch {
+  } catch (error) {
+    console.error("Admin authentication error:", error.message);
+
     return res.status(401).json({
-      success: false,
-      message: "Invalid or expired token.",
+      message: "Invalid or expired admin token.",
     });
   }
 }
 
-function requireAdmin(req, res, next) {
-  if (!req.auth || req.auth.role !== "admin") {
-    return res.status(403).json({
-      success: false,
-      message: "Administrator access required.",
-    });
-  }
+/* ================= ROOT ================= */
 
-  next();
-}
-
-async function getAuthenticatedUser(req) {
-  return User.findById(req.auth.id);
-}
-
-// --------------------------------------------------
-// HEALTH CHECK
-// --------------------------------------------------
-
-app.get(
-  "/",
-  asyncHandler(async (req, res) => {
+app.get("/", async (req, res) => {
+  try {
     await connectDB();
 
-    res.json({
+    return res.json({
       success: true,
       message: "ElonixxWallet API is running.",
-      database: "connected",
     });
-  })
-);
+  } catch (error) {
+    console.error("Root database error:", error);
 
-app.get("/api/health", (req, res) => {
-  res.json({
-    success: true,
-    message: "API is healthy.",
-  });
+    return res.status(500).json({
+      success: false,
+      message: "Database connection failed.",
+    });
+  }
 });
 
-// --------------------------------------------------
-// REGISTER
-// --------------------------------------------------
+/* ================= TEST ================= */
 
-app.post(
-  "/api/register",
-  asyncHandler(async (req, res) => {
+app.get("/api/test", async (req, res) => {
+  try {
     await connectDB();
 
-    const name =
-      typeof req.body.name === "string"
-        ? req.body.name.trim()
-        : "";
+    return res.json({
+      success: true,
+      message: "Backend and MongoDB are connected.",
+    });
+  } catch (error) {
+    console.error("Test route error:", error);
 
-    const email = normalizeEmail(req.body.email);
-    const password = req.body.password;
+    return res.status(500).json({
+      success: false,
+      message: "Database connection failed.",
+    });
+  }
+});
+
+/* ================= REGISTER ================= */
+
+app.post("/api/register", async (req, res) => {
+  try {
+    await connectDB();
+
+    if (!JWT_SECRET) {
+      return res.status(500).json({
+        message: "JWT_SECRET is not configured.",
+      });
+    }
+
+    const { name, email, password } = req.body || {};
 
     if (!name || !email || !password) {
       return res.status(400).json({
-        success: false,
-        message: "Name, email, and password are required.",
+        message: "Name, email and password are required.",
       });
     }
 
-    if (name.length > 100 || !validEmail(email)) {
+    const cleanName = String(name).trim();
+    const cleanEmail = String(email).trim().toLowerCase();
+    const cleanPassword = String(password);
+
+    if (cleanName.length < 2) {
       return res.status(400).json({
-        success: false,
-        message: "Enter a valid name and email address.",
+        message: "Name must be at least 2 characters.",
       });
     }
 
-    if (typeof password !== "string" || password.length < 8) {
+    if (cleanPassword.length < 6) {
       return res.status(400).json({
-        success: false,
-        message: "Password must contain at least 8 characters.",
+        message: "Password must be at least 6 characters.",
       });
     }
 
-    if (password.length > 128) {
-      return res.status(400).json({
-        success: false,
-        message: "Password is too long.",
-      });
-    }
+    const existingUser = await User.findOne({
+      email: cleanEmail,
+    });
 
-    const existingUser = await User.findOne({ email });
-
-    if (existingUser || email === ADMIN_EMAIL) {
+    if (existingUser) {
       return res.status(409).json({
-        success: false,
         message: "An account with this email already exists.",
       });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 12);
+    const hashedPassword = await bcrypt.hash(cleanPassword, 12);
 
     const user = await User.create({
-      name,
-      email,
+      name: cleanName,
+      email: cleanEmail,
       password: hashedPassword,
-      role: "user",
       balance: 0,
-      totalDeposits: 0,
-      totalWithdrawals: 0,
+      deposited: 0,
+      withdrawn: 0,
     });
 
-    const token = createToken({
-      id: user._id.toString(),
-      role: "user",
-    });
+    const token = jwt.sign(
+      {
+        userId: user._id.toString(),
+        role: "user",
+      },
+      JWT_SECRET,
+      {
+        expiresIn: "7d",
+      }
+    );
 
     return res.status(201).json({
-      success: true,
       message: "Registration successful.",
+      role: "user",
       token,
-      user: publicUser(user),
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        balance: user.balance,
+        deposited: user.deposited,
+        withdrawn: user.withdrawn,
+      },
     });
-  })
-);
+  } catch (error) {
+    console.error("Registration error:", error);
 
-// --------------------------------------------------
-// LOGIN
-// --------------------------------------------------
+    if (error.code === 11000) {
+      return res.status(409).json({
+        message: "An account with this email already exists.",
+      });
+    }
 
-app.post(
-  "/api/login",
-  asyncHandler(async (req, res) => {
+    return res.status(500).json({
+      message: "Registration failed.",
+    });
+  }
+});
+
+/* ================= LOGIN ================= */
+
+app.post("/api/login", async (req, res) => {
+  try {
     await connectDB();
 
-    const email = normalizeEmail(req.body.email);
-    const password = req.body.password;
+    const { email, password } = req.body || {};
 
-    if (!email || typeof password !== "string" || !password) {
+    if (!email || !password) {
       return res.status(400).json({
-        success: false,
         message: "Email and password are required.",
       });
     }
 
-    // Admin login is configured through environment variables.
+    const cleanEmail = String(email).trim().toLowerCase();
+    const cleanPassword = String(password);
+
     if (
       ADMIN_EMAIL &&
       ADMIN_PASSWORD &&
-      email === ADMIN_EMAIL &&
-      password === ADMIN_PASSWORD
+      cleanEmail === ADMIN_EMAIL &&
+      cleanPassword === ADMIN_PASSWORD
     ) {
-      const token = createToken({
-        id: `admin:${email}`,
-        role: "admin",
-      });
+      if (!requireJWTSecret(res)) return;
 
-      return res.json({
-        success: true,
-        message: "Admin login successful.",
-        token,
-        role: "admin",
-        user: {
-          id: `admin:${email}`,
-          name: "Administrator",
-          email,
+      const token = jwt.sign(
+        {
           role: "admin",
+          adminEmail: ADMIN_EMAIL,
         },
+        JWT_SECRET,
+        {
+          expiresIn: "7d",
+        }
+      );
+
+      return res.status(200).json({
+        message: "Admin login successful!",
+        role: "admin",
+        email: ADMIN_EMAIL,
+        token,
       });
     }
 
-    const user = await User.findOne({ email }).select("+password");
+    const user = await User.findOne({
+      email: cleanEmail,
+    });
 
-    if (!user) {
+    if (!user || !(await bcrypt.compare(cleanPassword, user.password))) {
       return res.status(401).json({
-        success: false,
         message: "Invalid email or password.",
       });
     }
 
-    const passwordMatches = await bcrypt.compare(
-      password,
-      user.password
+    if (!requireJWTSecret(res)) return;
+
+    const token = jwt.sign(
+      {
+        userId: user._id.toString(),
+        role: "user",
+      },
+      JWT_SECRET,
+      {
+        expiresIn: "7d",
+      }
     );
 
-    if (!passwordMatches) {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid email or password.",
-      });
-    }
-
-    const token = createToken({
-      id: user._id.toString(),
-      role: user.role,
-    });
-
-    return res.json({
-      success: true,
+    return res.status(200).json({
       message: "Login successful.",
+      role: "user",
       token,
-      role: user.role,
-      user: publicUser(user),
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        balance: user.balance,
+        deposited: user.deposited,
+        withdrawn: user.withdrawn,
+      },
     });
-  })
-);
+  } catch (error) {
+    console.error("Login error:", error);
 
-// --------------------------------------------------
-// USER DASHBOARD
-// --------------------------------------------------
+    return res.status(500).json({
+      message: "Login failed.",
+    });
+  }
+});
 
-app.get(
-  "/api/dashboard",
-  authenticate,
-  asyncHandler(async (req, res) => {
+/* ================= USER DASHBOARD ================= */
+
+app.get("/api/dashboard", authenticate, async (req, res) => {
+  try {
     await connectDB();
 
-    if (req.auth.role === "admin") {
-      return res.status(403).json({
-        success: false,
-        message: "Use the admin dashboard endpoint.",
-      });
-    }
-
-    const user = await getAuthenticatedUser(req);
+    const user = await User.findById(req.userId)
+      .select("-password");
 
     if (!user) {
       return res.status(404).json({
-        success: false,
         message: "User not found.",
       });
     }
-
-    const [transactions, pendingWithdrawals] = await Promise.all([
-      Transaction.find({ user: user._id })
-        .sort({ createdAt: -1 })
-        .limit(10)
-        .lean(),
-
-      Withdrawal.countDocuments({
-        user: user._id,
-        status: "pending",
-      }),
-    ]);
 
     return res.json({
       success: true,
-      user: publicUser(user),
-      balance: user.balance,
-      totalDeposits: user.totalDeposits,
-      totalWithdrawals: user.totalWithdrawals,
-      pendingWithdrawals,
-      transactions,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        balance: user.balance,
+        deposited: user.deposited,
+        withdrawn: user.withdrawn,
+        createdAt: user.createdAt,
+      },
     });
-  })
-);
+  } catch (error) {
+    console.error("Dashboard error:", error);
 
-// --------------------------------------------------
-// USER TRANSACTIONS
-// --------------------------------------------------
+    return res.status(500).json({
+      message: "Failed to load dashboard.",
+    });
+  }
+});
 
-app.get(
-  "/api/transactions",
-  authenticate,
-  asyncHandler(async (req, res) => {
+/* ================= USER TRANSACTIONS ================= */
+
+app.get("/api/transactions", authenticate, async (req, res) => {
+  try {
     await connectDB();
-
-    if (req.auth.role === "admin") {
-      return res.status(403).json({
-        success: false,
-        message: "Use the admin endpoints.",
-      });
-    }
-
-    const user = await getAuthenticatedUser(req);
-
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found.",
-      });
-    }
-
-    const limitValue = Number.parseInt(req.query.limit, 10);
-    const limit =
-      Number.isInteger(limitValue) && limitValue > 0
-        ? Math.min(limitValue, 100)
-        : 50;
 
     const transactions = await Transaction.find({
-      user: user._id,
-    })
-      .sort({ createdAt: -1 })
-      .limit(limit)
-      .lean();
+      userId: req.userId,
+    }).sort({
+      createdAt: -1,
+    });
 
     return res.json({
       success: true,
       transactions,
     });
-  })
-);
+  } catch (error) {
+    console.error("Transactions error:", error);
 
-// --------------------------------------------------
-// GET WITHDRAWAL ACCOUNTS
-// --------------------------------------------------
+    return res.status(500).json({
+      message: "Failed to load transactions.",
+    });
+  }
+});
 
-app.get(
-  "/api/withdrawal-accounts",
-  authenticate,
-  asyncHandler(async (req, res) => {
+/* ================= GET WITHDRAWAL ACCOUNTS ================= */
+
+app.get("/api/withdrawal-accounts", authenticate, async (req, res) => {
+  try {
     await connectDB();
 
-    if (req.auth.role !== "user") {
-      return res.status(403).json({
-        success: false,
-        message: "This endpoint is for users.",
-      });
-    }
-
     const accounts = await WithdrawalAccount.find({
-      user: req.auth.id,
-    })
-      .sort({ createdAt: -1 })
-      .lean();
+      userId: req.userId,
+    }).sort({
+      createdAt: -1,
+    });
 
     return res.json({
       success: true,
       accounts,
     });
-  })
-);
+  } catch (error) {
+    console.error("Withdrawal accounts error:", error);
 
-// --------------------------------------------------
-// ADD WITHDRAWAL ACCOUNT
-// --------------------------------------------------
+    return res.status(500).json({
+      message: "Failed to load withdrawal accounts.",
+    });
+  }
+});
 
-app.post(
-  "/api/withdrawal-accounts",
-  authenticate,
-  asyncHandler(async (req, res) => {
+/* ================= ADD WITHDRAWAL ACCOUNT ================= */
+
+app.post("/api/withdrawal-accounts", authenticate, async (req, res) => {
+  try {
     await connectDB();
 
-    if (req.auth.role !== "user") {
-      return res.status(403).json({
-        success: false,
-        message: "This endpoint is for users.",
-      });
-    }
+    const { bankName, accountNumber, accountName } = req.body || {};
 
-    const accountName =
-      typeof req.body.accountName === "string"
-        ? req.body.accountName.trim()
-        : "";
-
-    const accountNumber =
-      typeof req.body.accountNumber === "string"
-        ? req.body.accountNumber.trim()
-        : "";
-
-    const bankName =
-      typeof req.body.bankName === "string"
-        ? req.body.bankName.trim()
-        : "";
-
-    const bankCode =
-      typeof req.body.bankCode === "string"
-        ? req.body.bankCode.trim()
-        : "";
-
-    if (!accountName || !accountNumber || !bankName) {
+    if (!bankName || !accountNumber || !accountName) {
       return res.status(400).json({
-        success: false,
-        message:
-          "Account name, account number, and bank name are required.",
-      });
-    }
-
-    if (
-      accountName.length > 100 ||
-      accountNumber.length > 50 ||
-      bankName.length > 100 ||
-      bankCode.length > 30
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "One or more account fields are too long.",
-      });
-    }
-
-    const user = await getAuthenticatedUser(req);
-
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found.",
+        message: "Bank name, account number and account name are required.",
       });
     }
 
     const account = await WithdrawalAccount.create({
-      user: user._id,
-      accountName,
-      accountNumber,
-      bankName,
-      bankCode,
+      userId: req.userId,
+      bankName: String(bankName).trim(),
+      accountNumber: String(accountNumber).trim(),
+      accountName: String(accountName).trim(),
     });
 
     return res.status(201).json({
@@ -819,643 +620,365 @@ app.post(
       message: "Withdrawal account added successfully.",
       account,
     });
-  })
-);
+  } catch (error) {
+    console.error("Add withdrawal account error:", error);
 
-// --------------------------------------------------
-// CREATE WITHDRAWAL
-// --------------------------------------------------
+    return res.status(500).json({
+      message: "Failed to add withdrawal account.",
+    });
+  }
+});
 
-app.post(
-  "/api/withdrawals",
-  authenticate,
-  asyncHandler(async (req, res) => {
+/* ================= CREATE WITHDRAWAL ================= */
+
+app.post("/api/withdrawals", authenticate, async (req, res) => {
+  try {
     await connectDB();
 
-    if (req.auth.role !== "user") {
-      return res.status(403).json({
-        success: false,
-        message: "This endpoint is for users.",
-      });
-    }
-
-    const amount = parsePositiveAmount(req.body.amount);
-    const accountId = req.body.accountId || req.body.account;
-
-    if (!amount) {
-      return res.status(400).json({
-        success: false,
-        message: "Enter a valid withdrawal amount.",
-      });
-    }
+    const {
+      amount,
+      paymentMethod,
+      accountNumber,
+      accountName,
+    } = req.body || {};
 
     if (
-      !accountId ||
-      !mongoose.isValidObjectId(accountId)
+      amount === undefined ||
+      amount === null ||
+      String(amount).trim() === ""
     ) {
       return res.status(400).json({
-        success: false,
-        message: "A valid withdrawal account is required.",
+        message: "Please enter a withdrawal amount.",
       });
     }
 
-    const account = await WithdrawalAccount.findOne({
-      _id: accountId,
-      user: req.auth.id,
-    });
+    const numericAmount = Number(amount);
 
-    if (!account) {
-      return res.status(404).json({
-        success: false,
-        message: "Withdrawal account not found.",
+    if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+      return res.status(400).json({
+        message: "Please enter a valid withdrawal amount.",
       });
     }
 
-    /*
-     * Atomically reserve the funds before creating the request.
-     * Two concurrent requests cannot spend the same available balance.
-     */
-    const user = await User.findOneAndUpdate(
-      {
-        _id: req.auth.id,
-        balance: { $gte: amount },
-      },
-      {
-        $inc: { balance: -amount },
-      },
-      {
-        new: true,
-        runValidators: true,
-      }
-    );
+    if (!accountNumber || !accountName) {
+      return res.status(400).json({
+        message: "Account number and account name are required.",
+      });
+    }
+
+    const user = await User.findById(req.userId);
 
     if (!user) {
-      const existingUser = await User.exists({
-        _id: req.auth.id,
-      });
-
-      return res.status(existingUser ? 400 : 404).json({
-        success: false,
-        message: existingUser
-          ? "Insufficient balance."
-          : "User not found.",
+      return res.status(404).json({
+        message: "User not found.",
       });
     }
 
-    const reference = `WD-${crypto.randomUUID()}`;
-
-    let withdrawal;
-
-    try {
-      withdrawal = await Withdrawal.create({
-        user: user._id,
-        account: account._id,
-        amount,
-        status: "pending",
-        reference,
+    if (numericAmount > user.balance) {
+      return res.status(400).json({
+        message: "Insufficient balance.",
       });
-
-      await Transaction.create({
-        user: user._id,
-        type: "withdrawal",
-        amount,
-        status: "pending",
-        description: "Withdrawal request submitted",
-        reference,
-        metadata: {
-          withdrawalId: withdrawal._id,
-        },
-      });
-    } catch (error) {
-      /*
-       * Compensate if creating the withdrawal or transaction fails.
-       * The balance was already reserved above.
-       */
-      if (withdrawal) {
-        await Withdrawal.deleteOne({ _id: withdrawal._id });
-      }
-
-      await User.updateOne(
-        { _id: user._id },
-        { $inc: { balance: amount } }
-      );
-
-      throw error;
     }
+
+    const transaction = await Transaction.create({
+      userId: user._id,
+      transactionId: generateTransactionId(),
+      type: "withdrawal",
+      amount: numericAmount,
+      paymentMethod: paymentMethod || "Bank Transfer",
+      accountNumber: String(accountNumber).trim(),
+      accountName: String(accountName).trim(),
+      status: "pending",
+    });
 
     return res.status(201).json({
       success: true,
       message: "Withdrawal request submitted successfully.",
-      withdrawal,
-      balance: user.balance,
+      transaction,
     });
-  })
-);
+  } catch (error) {
+    console.error("Withdrawal error:", error);
 
-// --------------------------------------------------
-// ADMIN OVERVIEW
-// --------------------------------------------------
+    return res.status(500).json({
+      message: "Failed to submit withdrawal.",
+    });
+  }
+});
 
-app.get(
-  "/api/admin/overview",
-  authenticate,
-  requireAdmin,
-  asyncHandler(async (req, res) => {
+/* ================= ADMIN OVERVIEW ================= */
+
+app.get("/api/admin/overview", authenticateAdmin, async (req, res) => {
+  try {
     await connectDB();
 
     const [
       totalUsers,
-      users,
       totalTransactions,
-      transactions,
-      pendingWithdrawals,
       totalWithdrawals,
-      balanceResult,
-      pendingAmountResult,
+      pendingWithdrawals,
+      completedWithdrawals,
+      processingWithdrawals,
+      failedWithdrawals,
+      users,
     ] = await Promise.all([
-      User.countDocuments({ role: "user" }),
-
-      User.find({ role: "user" })
-        .select("-password")
-        .sort({ createdAt: -1 })
-        .limit(10)
-        .lean(),
+      User.countDocuments(),
 
       Transaction.countDocuments(),
 
-      Transaction.find()
-        .populate("user", "name email")
-        .sort({ createdAt: -1 })
-        .limit(10)
-        .lean(),
+      Transaction.countDocuments({
+        type: "withdrawal",
+      }),
 
-      Withdrawal.countDocuments({ status: "pending" }),
+      Transaction.countDocuments({
+        type: "withdrawal",
+        status: "pending",
+      }),
 
-      Withdrawal.countDocuments(),
+      Transaction.countDocuments({
+        type: "withdrawal",
+        status: "completed",
+      }),
 
-      User.aggregate([
-        { $match: { role: "user" } },
-        {
-          $group: {
-            _id: null,
-            totalBalance: { $sum: "$balance" },
-          },
-        },
-      ]),
+      Transaction.countDocuments({
+        type: "withdrawal",
+        status: "processing",
+      }),
 
-      Withdrawal.aggregate([
-        { $match: { status: "pending" } },
-        {
-          $group: {
-            _id: null,
-            pendingAmount: { $sum: "$amount" },
-          },
-        },
-      ]),
+      Transaction.countDocuments({
+        type: "withdrawal",
+        status: "failed",
+      }),
+
+      User.find()
+        .select("-password")
+        .sort({ createdAt: -1 }),
     ]);
 
     return res.json({
       success: true,
-      totalUsers,
-      totalTransactions,
-      totalWithdrawals,
-      pendingWithdrawals,
-      totalBalance: balanceResult[0]?.totalBalance || 0,
-      pendingAmount: pendingAmountResult[0]?.pendingAmount || 0,
+      statistics: {
+        totalUsers,
+        totalTransactions,
+        totalWithdrawals,
+        pendingWithdrawals,
+        completedWithdrawals,
+        processingWithdrawals,
+        failedWithdrawals,
+      },
       users,
-      transactions,
     });
-  })
-);
+  } catch (error) {
+    console.error("Admin overview error:", error);
 
-// --------------------------------------------------
-// ADMIN WITHDRAWALS LIST
-// --------------------------------------------------
+    return res.status(500).json({
+      success: false,
+      message: "Failed to load admin overview.",
+    });
+  }
+});
 
-app.get(
-  "/api/admin/withdrawals",
-  authenticate,
-  requireAdmin,
-  asyncHandler(async (req, res) => {
+/* ================= ADMIN WITHDRAWALS ================= */
+
+app.get("/api/admin/withdrawals", authenticateAdmin, async (req, res) => {
+  try {
     await connectDB();
 
-    const status = req.query.status;
-
-    const filter = {};
-
-    if (
-      status &&
-      ["pending", "approved", "rejected"].includes(status)
-    ) {
-      filter.status = status;
-    }
-
-    const withdrawals = await Withdrawal.find(filter)
-      .populate("user", "name email balance")
-      .populate(
-        "account",
-        "accountName accountNumber bankName bankCode"
-      )
-      .sort({ createdAt: -1 })
-      .limit(500)
-      .lean();
+    const withdrawals = await Transaction.find({
+      type: "withdrawal",
+    })
+      .populate("userId", "-password")
+      .sort({ createdAt: -1 });
 
     return res.json({
       success: true,
       withdrawals,
     });
-  })
-);
+  } catch (error) {
+    console.error("Admin withdrawals error:", error);
 
-// --------------------------------------------------
-// ADMIN UPDATE WITHDRAWAL STATUS
-// --------------------------------------------------
+    return res.status(500).json({
+      success: false,
+      message: "Failed to load withdrawals.",
+    });
+  }
+});
+
+/* ================= ADMIN UPDATE WITHDRAWAL STATUS ================= */
 
 app.patch(
   "/api/admin/withdrawals/:id/status",
-  authenticate,
-  requireAdmin,
-  asyncHandler(async (req, res) => {
-    await connectDB();
+  authenticateAdmin,
+  async (req, res) => {
+    try {
+      await connectDB();
 
-    const { id } = req.params;
-    const { status, adminNote = "" } = req.body;
+      const { status } = req.body || {};
 
-    if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid withdrawal ID.",
-      });
-    }
+      const allowedStatuses = [
+        "pending",
+        "processing",
+        "completed",
+        "failed",
+      ];
 
-    if (!["approved", "rejected"].includes(status)) {
-      return res.status(400).json({
-        success: false,
-        message: "Status must be approved or rejected.",
-      });
-    }
-
-    if (
-      typeof adminNote !== "string" ||
-      adminNote.length > 500
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Admin note must be 500 characters or fewer.",
-      });
-    }
-
-    /*
-     * Claim only pending requests. This prevents two admin actions
-     * from processing the same request more than once.
-     */
-    const withdrawal = await Withdrawal.findOneAndUpdate(
-      {
-        _id: id,
-        status: "pending",
-      },
-      {
-        $set: {
-          status,
-          adminNote,
-          processedAt: new Date(),
-          processedBy: mongoose.isValidObjectId(req.auth.id)
-            ? req.auth.id
-            : null,
-        },
-      },
-      {
-        new: true,
-      }
-    );
-
-    if (!withdrawal) {
-      const existing = await Withdrawal.findById(id);
-
-      if (!existing) {
-        return res.status(404).json({
-          success: false,
-          message: "Withdrawal not found.",
+      if (!allowedStatuses.includes(status)) {
+        return res.status(400).json({
+          message: "Invalid withdrawal status.",
         });
       }
 
-      return res.status(409).json({
-        success: false,
-        message: `This withdrawal has already been ${existing.status}.`,
-        withdrawal: existing,
+      if (!mongoose.isValidObjectId(req.params.id)) {
+        return res.status(400).json({
+          message: "Invalid withdrawal ID.",
+        });
+      }
+
+      const withdrawal = await Transaction.findOne({
+        _id: req.params.id,
+        type: "withdrawal",
       });
-    }
 
-    try {
-      if (status === "rejected") {
-        // Refund only when a pending request is rejected.
-        const refundResult = await User.updateOne(
-          { _id: withdrawal.user },
-          { $inc: { balance: withdrawal.amount } }
-        );
-
-        if (refundResult.matchedCount !== 1) {
-          throw new Error(
-            "Withdrawal rejected but the user refund could not be completed."
-          );
-        }
+      if (!withdrawal) {
+        return res.status(404).json({
+          message: "Withdrawal transaction not found.",
+        });
       }
 
-      if (status === "approved") {
-        // The amount was already reserved when the request was created.
-        // Do not deduct the balance a second time.
-        await User.updateOne(
-          { _id: withdrawal.user },
-          { $inc: { totalWithdrawals: withdrawal.amount } }
-        );
-      }
+      withdrawal.status = status;
 
-      await Transaction.updateOne(
-        { reference: withdrawal.reference },
-        {
-          $set: {
-            status: status === "approved" ? "completed" : "rejected",
-            description:
-              status === "approved"
-                ? "Withdrawal approved"
-                : "Withdrawal rejected and refunded",
-          },
-        }
-      );
+      await withdrawal.save();
+
+      return res.json({
+        success: true,
+        message: "Withdrawal status updated successfully.",
+        withdrawal,
+      });
     } catch (error) {
-      /*
-       * Do not silently claim that accounting succeeded.
-       * An operational error here needs attention and reconciliation.
-       */
-      console.error(
-        "Withdrawal accounting error:",
-        withdrawal._id,
-        error
-      );
+      console.error("Update withdrawal status error:", error);
 
       return res.status(500).json({
         success: false,
-        message:
-          "The withdrawal status changed, but accounting needs administrator review.",
-        withdrawal,
+        message: "Failed to update withdrawal status.",
       });
     }
-
-    return res.json({
-      success: true,
-      message:
-        status === "approved"
-          ? "Withdrawal approved successfully."
-          : "Withdrawal rejected and balance refunded.",
-      withdrawal,
-    });
-  })
+  }
 );
 
-// --------------------------------------------------
-// ADMIN UPDATE USER BALANCE
-// --------------------------------------------------
+/* ================= ADMIN UPDATE USER BALANCE ================= */
+/* This route must be above the 404 handler. */
 
 app.patch(
   "/api/admin/users/:id/balance",
-  authenticate,
-  requireAdmin,
-  asyncHandler(async (req, res) => {
-    await connectDB();
+  authenticateAdmin,
+  async (req, res) => {
+    try {
+      await connectDB();
 
-    const { id } = req.params;
-    const amount = Number(req.body.amount);
-    const operation = req.body.operation || "set";
-    const description =
-      typeof req.body.description === "string"
-        ? req.body.description.trim()
-        : "Administrator balance adjustment";
+      const { amount } = req.body || {};
 
-    if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid user ID.",
-      });
-    }
-
-    if (
-      !Number.isFinite(amount) ||
-      amount < 0 ||
-      amount > 1_000_000_000_000
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Enter a valid non-negative balance amount.",
-      });
-    }
-
-    if (!["set", "add", "subtract"].includes(operation)) {
-      return res.status(400).json({
-        success: false,
-        message: "Operation must be set, add, or subtract.",
-      });
-    }
-
-    if (description.length > 500) {
-      return res.status(400).json({
-        success: false,
-        message: "Description is too long.",
-      });
-    }
-
-    const roundedAmount =
-      Math.round((amount + Number.EPSILON) * 100) / 100;
-
-    const user = await User.findById(id);
-
-    if (!user || user.role !== "user") {
-      return res.status(404).json({
-        success: false,
-        message: "User not found.",
-      });
-    }
-
-    let updatedUser;
-    let change;
-
-    if (operation === "set") {
-      change = roundedAmount - user.balance;
-
-      if (change < 0) {
-        updatedUser = await User.findOneAndUpdate(
-          {
-            _id: id,
-            balance: { $gte: Math.abs(change) },
-          },
-          {
-            $set: { balance: roundedAmount },
-          },
-          { new: true }
-        );
-      } else {
-        updatedUser = await User.findByIdAndUpdate(
-          id,
-          { $set: { balance: roundedAmount } },
-          { new: true }
-        );
-      }
-    } else if (operation === "add") {
-      change = roundedAmount;
-
-      updatedUser = await User.findByIdAndUpdate(
-        id,
-        { $inc: { balance: roundedAmount } },
-        { new: true }
-      );
-    } else {
-      change = -roundedAmount;
-
-      updatedUser = await User.findOneAndUpdate(
-        {
-          _id: id,
-          balance: { $gte: roundedAmount },
-        },
-        { $inc: { balance: -roundedAmount } },
-        { new: true }
-      );
-    }
-
-    if (!updatedUser) {
-      return res.status(400).json({
-        success: false,
-        message: "The balance update could not be completed.",
-      });
-    }
-
-    if (change !== 0) {
-      try {
-        await Transaction.create({
-          user: updatedUser._id,
-          type: "adjustment",
-          amount: Math.abs(change),
-          status: "completed",
-          description,
-          reference: `ADJ-${crypto.randomUUID()}`,
-          metadata: {
-            operation,
-            change,
-            adminId: req.auth.id,
-          },
-        });
-      } catch (error) {
-        console.error("Balance audit transaction error:", error);
-
-        return res.status(500).json({
+      if (
+        amount === undefined ||
+        amount === null ||
+        String(amount).trim() === ""
+      ) {
+        return res.status(400).json({
           success: false,
-          message:
-            "Balance was updated, but the audit record could not be saved. Administrator review is required.",
-          user: publicUser(updatedUser),
+          message: "Balance amount is required.",
         });
       }
+
+      const numericAmount = Number(amount);
+
+      if (!Number.isFinite(numericAmount) || numericAmount < 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Enter a valid balance of zero or greater.",
+        });
+      }
+
+      if (!mongoose.isValidObjectId(req.params.id)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid user ID.",
+        });
+      }
+
+      const user = await User.findById(req.params.id);
+
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: "User not found.",
+        });
+      }
+
+      // Change only the balance.
+      // Deposited and withdrawn totals are not changed here.
+      user.balance = numericAmount;
+
+      await user.save();
+
+      return res.status(200).json({
+        success: true,
+        message: "User balance updated successfully.",
+        user: {
+          _id: user._id,
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          balance: user.balance,
+          deposited: user.deposited,
+          withdrawn: user.withdrawn,
+          createdAt: user.createdAt,
+          updatedAt: user.updatedAt,
+        },
+      });
+    } catch (error) {
+      console.error("Admin update user balance error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to update user balance.",
+      });
     }
-
-    return res.json({
-      success: true,
-      message: "User balance updated successfully.",
-      user: publicUser(updatedUser),
-      balance: updatedUser.balance,
-    });
-  })
+  }
 );
 
-// --------------------------------------------------
-// ADMIN DETAILS
-// --------------------------------------------------
+/* ================= ADMIN CHECK ================= */
 
-app.get(
-  "/api/admin/me",
-  authenticate,
-  requireAdmin,
-  asyncHandler(async (req, res) => {
-    return res.json({
-      success: true,
-      user: {
-        id: req.auth.id,
-        email: ADMIN_EMAIL || "",
-        role: "admin",
-      },
-    });
-  })
-);
-
-// --------------------------------------------------
-// 404 HANDLER
-// --------------------------------------------------
-
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    message: `Route not found: ${req.method} ${req.path}`,
+app.get("/api/admin/me", authenticateAdmin, async (req, res) => {
+  return res.json({
+    success: true,
+    role: "admin",
+    email: req.admin.adminEmail,
   });
 });
 
-// --------------------------------------------------
-// GLOBAL ERROR HANDLER
-// --------------------------------------------------
+/* ================= 404 HANDLER ================= */
+/* Keep this after every API route. */
+
+app.use((req, res) => {
+  return res.status(404).json({
+    success: false,
+    message: `Route ${req.method} ${req.originalUrl} not found.`,
+  });
+});
+
+/* ================= GLOBAL ERROR HANDLER ================= */
 
 app.use((error, req, res, next) => {
-  console.error("API error:", error);
+  console.error("Global server error:", error);
 
   if (res.headersSent) {
     return next(error);
   }
 
-  if (error?.code === 11000) {
-    return res.status(409).json({
-      success: false,
-      message: "A record with these details already exists.",
-    });
-  }
-
-  if (error instanceof mongoose.Error.ValidationError) {
-    return res.status(400).json({
-      success: false,
-      message: "Validation failed.",
-      errors: Object.values(error.errors).map(
-        (item) => item.message
-      ),
-    });
-  }
-
-  if (error instanceof mongoose.Error.CastError) {
-    return res.status(400).json({
-      success: false,
-      message: "Invalid ID or field value.",
-    });
-  }
-
   return res.status(500).json({
     success: false,
-    message:
-      process.env.NODE_ENV === "production"
-        ? "An internal server error occurred."
-        : error.message,
+    message: "Internal server error.",
   });
 });
 
-// --------------------------------------------------
-// LOCAL DEVELOPMENT
-// --------------------------------------------------
-
-// Vercel uses the exported Express app.
-// Run `node index.jsx` locally if your Node version supports JSX
-// filenames as ordinary JavaScript entry points.
-
-if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
-  connectDB()
-    .then(() => {
-      app.listen(PORT, () => {
-        console.log(`ElonixxWallet API running on port ${PORT}`);
-      });
-    })
-    .catch((error) => {
-      console.error("Failed to connect to MongoDB:", error.message);
-    });
-}
+/* ================= VERCEL EXPORT ================= */
 
 export default app;
