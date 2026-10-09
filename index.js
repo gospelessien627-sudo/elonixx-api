@@ -522,6 +522,11 @@ app.get("/api/dashboard", authenticate, async (req, res) => {
         message: "User not found.",
       });
     }
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+
+
 
     return res.json({
       success: true,
