@@ -92,6 +92,10 @@ const userSchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
+  isActive: {
+    type: Boolean,
+    default: true,
+  },
 }, {
   timestamps: true,
 });
@@ -216,6 +220,16 @@ async function authenticate(req, res, next) {
     if (decoded.role !== "user" || !decoded.userId) {
       return res.status(403).json({
         message: "User access required.",
+      });
+    }
+
+    await connectDB();
+    const account = await User.findById(decoded.userId).select("isActive");
+
+    if (!account || account.isActive === false) {
+      return res.status(403).json({
+        success: false,
+        message: "This account is deactivated or no longer available.",
       });
     }
 
@@ -470,6 +484,12 @@ app.post("/api/login", async (req, res) => {
     if (!user || !(await bcrypt.compare(cleanPassword, user.password))) {
       return res.status(401).json({
         message: "Invalid email or password.",
+      });
+    }
+
+    if (user.isActive === false) {
+      return res.status(403).json({
+        message: "This account has been deactivated. Contact support for assistance.",
       });
     }
 
@@ -944,6 +964,60 @@ app.patch(
       return res.status(500).json({
         success: false,
         message: "Failed to update user balance.",
+      });
+    }
+  }
+);
+
+/* ================= ADMIN DEACTIVATE / REACTIVATE USER ================= */
+/* Soft removal retains transactions and withdrawal history. */
+
+app.patch(
+  "/api/admin/users/:id/status",
+  authenticateAdmin,
+  async (req, res) => {
+    try {
+      await connectDB();
+
+      if (!mongoose.isValidObjectId(req.params.id)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid user ID.",
+        });
+      }
+
+      if (typeof req.body?.isActive !== "boolean") {
+        return res.status(400).json({
+          success: false,
+          message: "isActive must be true or false.",
+        });
+      }
+
+      const user = await User.findByIdAndUpdate(
+        req.params.id,
+        { $set: { isActive: req.body.isActive } },
+        { new: true, runValidators: true }
+      ).select("-password");
+
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: "User not found.",
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: user.isActive
+          ? "User account reactivated. Transaction history was retained."
+          : "User account deactivated. Transaction history was retained.",
+        user,
+      });
+    } catch (error) {
+      console.error("Admin update user status error:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to update user account status.",
       });
     }
   }
